@@ -39,9 +39,9 @@ Copy the `mo2_bulk_update_manager/` folder into your MO2 `plugins/` directory:
 
 Restart MO2. The tool appears under **Tools > MO2 Bulk Update Manager**.
 
-**Upgrading from a folder called `mo2_update_manager`?** Delete it. MO2 loads every plugin folder it finds, so leaving both installs the plugin twice. The tool was called *Update Manager* until 2026-08-18, when the name turned out to collide with an unrelated MO2 plugin.
+**Upgrading from a folder called `mo2_update_manager`?** Delete it. MO2 loads every plugin folder it finds, so leaving both installs the plugin twice. The tool was called *Update Manager* during development, until that turned out to be the name of an [existing MO2 plugin](https://www.nexusmods.com/site/mods/1895). Anything it left behind under the old name — plugin settings, per-mod notes, its scan cache — is simply abandoned, not migrated. That is deliberate: **the old name belongs to somebody else's plugin**, and reading or deleting data filed under it would mean touching another plugin's state. Nothing here reads a key or a file it did not write.
 
-That display name is also the key MO2 files plugin settings under — including the per-mod notes and ignore overrides this plugin writes into each mod's `meta.ini` — so the old name is still read where the new one has nothing yet, and the on-disk scan cache is adopted rather than rebuilt. Nothing is deleted on the strength of a rename. The plugin's own settings under **Settings > Plugins** do reset to their defaults, because MO2 only exposes settings for a plugin that is currently loaded; re-set them there if you had changed any.
+There is nothing to lose in practice, because the plugin was never released under that name.
 
 ## Usage
 

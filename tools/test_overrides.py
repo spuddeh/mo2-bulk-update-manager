@@ -263,49 +263,39 @@ check("word order does not matter", dialog._matches(noted, ["cet", "winds"]))
 check("versions are not searched", not dialog._matches(noted, ["2.1"]))
 check("nothing matches a missing row", not dialog._matches(None, ["cet"]))
 
-# -- surviving the rename --------------------------------------------------
-
-NOW = "MO2 Bulk Update Manager"
-THEN = "Update Manager"
+# -- per-mod settings ------------------------------------------------------
 
 
 class FakeMod:
-    """A mod carrying plugin settings under whichever names are given."""
+    """A mod carrying plugin settings under a given plugin name."""
 
     def __init__(self, groups, explode=False):
-        self._groups = groups
+        self.groups = {k: dict(v) for k, v in groups.items()}
         self._explode = explode
 
     def pluginSettings(self, plugin_name):
         if self._explode:
             raise RuntimeError("MO2 said no")
-        return self._groups.get(plugin_name, {})
+        return dict(self.groups.get(plugin_name, {}))
 
+
+NOW = "MO2 Bulk Update Manager"
+OTHER = "Update Manager"
 
 print("read_overrides")
 check(
-    "reads settings under the current name",
-    read_overrides(FakeMod({NOW: {"note": "new"}}), NOW) == {"note": "new"},
+    "reads settings under this plugin's own name",
+    read_overrides(FakeMod({NOW: {"note": "mine"}}), NOW) == {"note": "mine"},
 )
 check(
-    "falls back to the name the plugin used to have",
-    read_overrides(FakeMod({THEN: {"note": "old"}}), NOW) == {"note": "old"},
-    "a rename must not strand notes already in a meta.ini",
+    "never reads a name belonging to some other plugin",
+    read_overrides(FakeMod({OTHER: {"note": "theirs"}}), NOW) == {},
+    "'Update Manager' is a real MO2 plugin; its per-mod data is not ours to read",
 )
-check(
-    "prefers the current name when both exist",
-    read_overrides(FakeMod({NOW: {"note": "new"}, THEN: {"note": "old"}}), NOW)
-    == {"note": "new"},
-)
-check(
-    "a cleared note does not resurrect the old one",
-    read_overrides(FakeMod({NOW: {"note": ""}, THEN: {"note": "old"}}), NOW)
-    == {"note": ""},
-    "the fallback must only fire when the current group is absent entirely",
-)
-check("nothing stored anywhere", read_overrides(FakeMod({}), NOW) == {})
-check("no plugin name to ask under", read_overrides(FakeMod({THEN: {"a": "b"}}), "") == {})
+check("nothing stored", read_overrides(FakeMod({}), NOW) == {})
+check("no plugin name to ask under", read_overrides(FakeMod({OTHER: {"a": "b"}}), "") == {})
 check("MO2 refusing is not fatal", read_overrides(FakeMod({}, explode=True), NOW) == {})
+
 
 print()
 print("FAILED: " + ", ".join(FAILURES) if FAILURES else "all checks passed")
