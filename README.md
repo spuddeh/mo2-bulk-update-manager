@@ -41,7 +41,7 @@ Restart MO2. The tool appears under **Tools > Update Manager**.
 
 1. Open **Tools > Update Manager**. A quick scan starts automatically.
 2. Mods are grouped by outcome (see the table below).
-3. Click a mod to read its changelog and file list. The file that will be downloaded is marked ✓, the one you have installed is marked •; pick a different one with **Download this file instead**.
+3. Click a mod to read its changelog and file list. The file that will be downloaded is marked ✓, the one you have installed is marked •; pick a different one with **Download this file instead**. Old and archived uploads are hidden — the World Builder page drops from twelve files to three — and **Show every file** brings them back for that session. The file you have and the one queued for download are never hidden, whatever category they sit in.
 4. Tick what you want, then **Download selected** or **Install selected**.
 5. Downloads land in MO2's Downloads tab.
 
@@ -126,6 +126,7 @@ Nothing is written to the credential store, and the token is never logged or dis
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `api_key` | *(empty)* | Fallback personal API key, used only if MO2's own login can't be read |
+| `file_categories` | `MAIN,UPDATE,OPTIONAL,MISCELLANEOUS` | Nexus file categories to list in the Files tab. `OLD_VERSION` and `ARCHIVED` are hidden by default — a long-running mod can carry sixty superseded uploads |
 | `recheck_days` | `30` | During a quick scan, re-verify cached results older than this many days so delistings surface |
 | `write_back_versions` | `true` | Record the newest version on the MO2 mod so the main modlist shows its update flag |
 

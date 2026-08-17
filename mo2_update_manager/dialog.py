@@ -109,6 +109,10 @@ _CATEGORY_RANK = {
 # Categories that are never the right default download.
 _SUPERSEDED = ("OLD_VERSION", "ARCHIVED")
 
+# Every category Nexus uses, and which of them are worth listing by default.
+_ALL_CATEGORIES = ("MAIN", "UPDATE", "OPTIONAL", "MISCELLANEOUS", "OLD_VERSION", "ARCHIVED")
+DEFAULT_FILE_CATEGORIES = "MAIN,UPDATE,OPTIONAL,MISCELLANEOUS"
+
 
 def _make_scrollable(tree) -> None:
     """Let a tree's columns size to their content and scroll sideways.
@@ -230,10 +234,23 @@ class UpdateManagerDialog(QDialog):
         self._file_desc = QTextBrowser()
         self._file_desc.setOpenExternalLinks(True)
         files_layout.addWidget(self._file_desc, 2)
+
+        files_controls = QHBoxLayout()
+        self._show_all_files = QCheckBox("Show every file")
+        self._show_all_files.setToolTip(
+            "Include categories hidden by the 'file_categories' plugin setting, "
+            "such as old versions and archived uploads."
+        )
+        self._show_all_files.toggled.connect(self._on_show_all_files)
+        files_controls.addWidget(self._show_all_files)
+        self._files_hidden_label = QLabel("")
+        files_controls.addWidget(self._files_hidden_label, 1)
         self._use_file_btn = QPushButton("Download this file instead")
         self._use_file_btn.setEnabled(False)
         self._use_file_btn.clicked.connect(self._on_use_file)
-        files_layout.addWidget(self._use_file_btn)
+        files_controls.addWidget(self._use_file_btn)
+        files_layout.addLayout(files_controls)
+
         self._tabs.addTab(files_page, "Files")
 
         self._details_view = QTextBrowser()
@@ -656,8 +673,20 @@ class UpdateManagerDialog(QDialog):
 
         self._changelog_view.setHtml("".join(blocks))
 
+    def _visible_categories(self) -> set:
+        raw = str(self._setting("file_categories", DEFAULT_FILE_CATEGORIES))
+        chosen = {part.strip().upper() for part in raw.split(",") if part.strip()}
+        # An empty or unrecognisable setting should not blank the list.
+        return chosen or set(_ALL_CATEGORIES)
+
+    def _on_show_all_files(self) -> None:
+        entry = self._current_entry()
+        if entry is not None and entry.files is not None:
+            self._render_files(entry)
+
     def _render_files(self, entry: ModEntry) -> None:
         self._files_tree.clear()
+        self._files_hidden_label.clear()
         files = entry.files or []
         if not files:
             self._use_file_btn.setEnabled(False)
@@ -669,6 +698,24 @@ class UpdateManagerDialog(QDialog):
                 entry.picked_file_id = best.get("file_id")
 
         installed_ids = set(entry.installed_file_ids)
+        if not self._show_all_files.isChecked():
+            allowed = self._visible_categories()
+            keep = set(installed_ids)
+            keep.add(entry.picked_file_id)
+            visible = [
+                info
+                for info in files
+                if str(info.get("category_name") or "").upper() in allowed
+                # Never hide the file you have or the one about to download,
+                # whatever category they happen to sit in.
+                or info.get("file_id") in keep
+            ]
+            if len(visible) < len(files):
+                self._files_hidden_label.setText(
+                    f"{len(files) - len(visible)} file(s) hidden by category."
+                )
+            files = visible
+
         for info in sorted(files, key=_file_sort_key):
             item = QTreeWidgetItem(
                 self._files_tree,

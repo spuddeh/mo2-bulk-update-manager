@@ -8,7 +8,7 @@ except ImportError:
 import mobase
 
 from ._version import VERSION
-from .dialog import UpdateManagerDialog
+from .dialog import DEFAULT_FILE_CATEGORIES, UpdateManagerDialog
 
 PLUGIN_NAME = "Update Manager"
 
@@ -70,6 +70,14 @@ class UpdateManagerPlugin(mobase.IPluginTool):
                 "During a quick scan, re-verify mods whose cached result is older than "
                 "this many days, so delisted mods still surface",
                 30,
+            ),
+            mobase.PluginSetting(
+                "file_categories",
+                "Nexus file categories to list in the Files tab, comma separated. "
+                "Choose from MAIN, UPDATE, OPTIONAL, MISCELLANEOUS, OLD_VERSION, "
+                "ARCHIVED. The file you have installed and the one queued for "
+                "download are always shown",
+                DEFAULT_FILE_CATEGORIES,
             ),
             mobase.PluginSetting(
                 "write_back_versions",
