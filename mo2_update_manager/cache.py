@@ -18,10 +18,27 @@ from typing import Optional
 CACHE_FILENAME = "update_manager_cache.json"
 
 # 2: added the per-page file list, needed to compare file lines rather than
-#    page versions. Older caches are discarded rather than migrated.
-SCHEMA_VERSION = 2
+#    page versions.
+# 3: moved classification onto the v3 API -- update chains with an explicit
+#    position instead of file lines inferred from names and version strings.
+#    Older caches are discarded rather than migrated; a rebuild is one scan.
+SCHEMA_VERSION = 3
 
-# Fields worth keeping from each file record; the rest is refetched on demand.
+# Fields worth keeping from each v3 chain version. `game_scoped_id` is the
+# legacy file id, which is what MO2 records and what downloads are keyed on.
+_VERSION_FIELDS = (
+    "id",
+    "game_scoped_id",
+    "name",
+    "version",
+    "position",
+    "category",
+    "is_primary",
+    "uploaded_at",
+)
+
+# Kept from each v1 file record, for the Files tab only -- v3 does not carry
+# size or description, and that pane is fetched lazily anyway.
 _FILE_FIELDS = ("file_id", "name", "version", "uploaded_timestamp", "category_name")
 
 
@@ -30,6 +47,11 @@ class ScanCache:
         self._path = os.path.join(directory, CACHE_FILENAME)
         self._mods: dict[str, dict] = {}
         self._games: dict[str, dict] = {}
+        # v3 update chains, keyed by chain id, shared across every mod that
+        # draws from them.
+        self._chains: dict[str, dict] = {}
+        # Installed file id -> the chain and position it resolved to.
+        self._installed: dict[str, dict] = {}
         self._dirty = False
         self._load()
 
@@ -47,12 +69,20 @@ class ScanCache:
 
         self._mods = raw.get("mods") or {}
         self._games = raw.get("games") or {}
+        self._chains = raw.get("chains") or {}
+        self._installed = raw.get("installed") or {}
 
     def save(self) -> Optional[str]:
         """Write the cache back. Returns an error string on failure."""
         if not self._dirty:
             return None
-        payload = {"schema": SCHEMA_VERSION, "mods": self._mods, "games": self._games}
+        payload = {
+            "schema": SCHEMA_VERSION,
+            "mods": self._mods,
+            "games": self._games,
+            "chains": self._chains,
+            "installed": self._installed,
+        }
         try:
             os.makedirs(os.path.dirname(self._path), exist_ok=True)
             temp = self._path + ".tmp"
@@ -67,6 +97,8 @@ class ScanCache:
     def clear(self) -> None:
         self._mods = {}
         self._games = {}
+        self._chains = {}
+        self._installed = {}
         self._dirty = True
 
     # -- per-mod records ---------------------------------------------------
@@ -120,6 +152,60 @@ class ScanCache:
         if not record:
             return float("inf")
         return max(0.0, (time.time() - record.get("checked", 0)) / 86400.0)
+
+    # -- v3: update chains -------------------------------------------------
+
+    def game_id(self, domain: str) -> Optional[int]:
+        value = (self._games.get(domain) or {}).get("game_id")
+        return int(value) if value else None
+
+    def put_game_id(self, domain: str, game_id: int) -> None:
+        self._games.setdefault(domain, {})["game_id"] = int(game_id)
+        self._dirty = True
+
+    def put_installed(self, domain: str, file_id: int, record: dict) -> None:
+        """Remember which chain an installed file belongs to, and where in it.
+
+        This never changes for a given file id, so once resolved it never needs
+        asking again.
+        """
+        self._installed[self._key(domain, file_id)] = {
+            "chain": str(record.get("mod_file_id") or ""),
+            "position": str(record.get("position") or "0"),
+            "version": str(record.get("version") or ""),
+            "name": str(record.get("name") or ""),
+        }
+        self._dirty = True
+
+    def get_installed(self, domain: str, file_id: int) -> Optional[dict]:
+        return self._installed.get(self._key(domain, file_id))
+
+    def put_chain(self, chain_id, versions: list) -> None:
+        self._chains[str(chain_id)] = {
+            "versions": [
+                {field: v.get(field) for field in _VERSION_FIELDS}
+                for v in (versions or [])
+            ],
+            "checked": int(time.time()),
+        }
+        self._dirty = True
+
+    def get_chain(self, chain_id) -> Optional[list]:
+        record = self._chains.get(str(chain_id))
+        return record.get("versions") if record else None
+
+    def chain_age_days(self, chain_id) -> float:
+        record = self._chains.get(str(chain_id))
+        if not record:
+            return float("inf")
+        return max(0.0, (time.time() - record.get("checked", 0)) / 86400.0)
+
+    def put_status(self, domain: str, mod_id: int, status: str, name: str) -> None:
+        record = self._mods.setdefault(self._key(domain, mod_id), {})
+        record.update(
+            {"status": status, "name": name, "checked": int(time.time())}
+        )
+        self._dirty = True
 
     # -- per-game bookkeeping ----------------------------------------------
 

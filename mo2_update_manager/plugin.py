@@ -70,8 +70,8 @@ class UpdateManagerPlugin(mobase.IPluginTool):
             ),
             mobase.PluginSetting(
                 "recheck_days",
-                "During a quick scan, re-verify mods whose cached result is older than "
-                "this many days, so delisted mods still surface",
+                "Re-fetch a mod's update chain when the cached copy is older than "
+                "this many days, even if Nexus did not report the mod as changed",
                 30,
             ),
             mobase.PluginSetting(

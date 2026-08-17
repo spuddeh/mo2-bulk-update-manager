@@ -337,9 +337,8 @@ class UpdateManagerDialog(QDialog):
 
         self._deep_btn = QPushButton("Deep scan")
         self._deep_btn.setToolTip(
-            "Query every mod individually. Slower and uses far more of the hourly "
-            "API budget, but it is the only way to catch mods pulled from Nexus "
-            "a long time ago."
+            "Re-read every mod's update chain, not just the ones Nexus reports as "
+            "changed. Slower and uses far more of the hourly API budget."
         )
         self._deep_btn.clicked.connect(self._confirm_deep_scan)
         controls.addWidget(self._deep_btn)
@@ -463,8 +462,8 @@ class UpdateManagerDialog(QDialog):
         answer = QMessageBox.question(
             self,
             "Deep scan",
-            f"A deep scan sends one Nexus request per mod ({count} in this profile). "
-            "It is the only way to catch mods that were pulled from Nexus long ago."
+            f"A deep scan re-reads the update chain of every mod ({count} in this "
+            "profile) instead of only the ones Nexus reports as changed."
             f"{budget}\n\nContinue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,

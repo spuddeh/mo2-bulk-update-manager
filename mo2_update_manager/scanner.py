@@ -79,6 +79,8 @@ class ModEntry:
         "download",
         "ignored_version",
         "page_note",
+        "chain_id",
+        "chain_position",
     )
 
     # status values
@@ -123,6 +125,11 @@ class ModEntry:
         # Set to the page's version when the page has moved past this file.
         # Purely informational -- there is nothing to download.
         self.page_note = ""
+        # The v3 update chain this mod's installed file belongs to, and where
+        # in that chain it sits. `position` is Nexus's own ordering: higher is
+        # newer, and it does not depend on parsing the version string.
+        self.chain_id = ""
+        self.chain_position = 0.0
 
     @property
     def row_label(self) -> str:
@@ -466,6 +473,117 @@ def _plain_version(text: str) -> Optional[tuple]:
     if not cleaned or not _PLAIN_VERSION.match(cleaned):
         return None
     return tuple(int(part) for part in cleaned.split("."))
+
+
+def position_of(version: dict) -> float:
+    """A v3 version's place in its chain. Higher is newer."""
+    try:
+        return float((version or {}).get("position") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def newest_in_chain(versions: list) -> Optional[dict]:
+    """The current version of an update chain."""
+    return max(versions, key=position_of) if versions else None
+
+
+def as_file_record(version: dict) -> dict:
+    """Present a v3 chain version in the shape the rest of the UI expects.
+
+    `game_scoped_id` is the legacy file id, which is what MO2 records and what
+    `IDownloadManager` needs, so it becomes `file_id` here. Normalising at this
+    one boundary keeps the v3 vocabulary out of the window.
+    """
+    version = version or {}
+    try:
+        file_id = int(version.get("game_scoped_id") or 0)
+    except (TypeError, ValueError):
+        file_id = 0
+    return {
+        "file_id": file_id,
+        "name": str(version.get("name") or ""),
+        "version": str(version.get("version") or ""),
+        "category_name": str(version.get("category") or "").upper(),
+        "is_primary": bool(version.get("is_primary")),
+        "position": version.get("position"),
+        "uploaded_at": version.get("uploaded_at"),
+    }
+
+
+_TRAILING_WORD = re.compile(r"^([0-9.]*?)([A-Za-z][A-Za-z0-9]*)$")
+
+
+def versions_match(mo2_version: str, nexus_version: str) -> bool:
+    """Whether MO2's version string and a Nexus one describe the same upload.
+
+    MO2 pads to four segments and Nexus does not, so ``1.37.1.0`` and ``1.37.1``
+    are the same release, and ``1.0.0.0apartments`` is ``1.0.0apartments`` with
+    a zero segment inserted before the suffix. Only used when MO2 recorded no
+    file id and there is nothing exact to go on.
+    """
+    left, right = (mo2_version or "").strip(), (nexus_version or "").strip()
+    if not left or not right:
+        return False
+    if _normalize(left) == _normalize(right):
+        return True
+
+    a, b = _numeric_tuple(left), _numeric_tuple(right)
+    if a is not None and b is not None:
+        return a == b
+
+    ma, mb = _TRAILING_WORD.match(left), _TRAILING_WORD.match(right)
+    if ma and mb and ma.group(2).lower() == mb.group(2).lower():
+        a = _numeric_tuple(ma.group(1).rstrip("."))
+        b = _numeric_tuple(mb.group(1).rstrip("."))
+        return a is not None and a == b
+    return False
+
+
+def _numeric_tuple(text: str) -> Optional[tuple]:
+    """A dotted number with trailing zero segments removed, or None.
+
+    MO2 pads to four segments, so ``1.0.0.0`` and ``1`` are the same release
+    and have to compare equal.
+    """
+    cleaned = (text or "").strip().lstrip("vV")
+    if not cleaned:
+        return None
+    parts = [p for p in cleaned.split(".") if p != ""]
+    if not parts or not all(p.isdigit() for p in parts):
+        return None
+    numbers = [int(p) for p in parts]
+    while len(numbers) > 1 and numbers[-1] == 0:
+        numbers.pop()
+    return tuple(numbers)
+
+
+def choose_chain(entry: ModEntry, chains: list) -> Optional[dict]:
+    """Pick the chain a mod came from when its file id was never recorded.
+
+    MO2 only started recording `[installedFiles]` at some point, so a few
+    percent of any real profile has nothing to resolve. Matching falls back to
+    the archive name, longest match first, exactly as the legacy path did.
+    """
+    if not chains:
+        return None
+    if len(chains) == 1:
+        return chains[0]
+
+    archive = _squash(entry.installation_file)
+    if archive:
+        hits = [
+            c
+            for c in chains
+            if _squash(str(c.get("name") or "")) and _squash(str(c.get("name") or "")) in archive
+        ]
+        if hits:
+            return max(hits, key=lambda c: len(_squash(str(c.get("name") or ""))))
+
+    active = [c for c in chains if c.get("is_active")]
+    if len(active) == 1:
+        return active[0]
+    return None
 
 
 def page_ahead_of(file_version: str, page_version: str) -> bool:

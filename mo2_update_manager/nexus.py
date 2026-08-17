@@ -39,6 +39,36 @@ _log = get_logger("nexus")
 
 API_BASE = "https://api.nexusmods.com/v1"
 
+# The v3 API models what v1 leaves to inference: a "mod file" *is* the update
+# chain an author declares, and each version carries a `position` where higher
+# means newer. That removes the need to order free-text version strings, which
+# is where every classification bug so far has come from.
+#
+# Two of its endpoints take up to 2000 ids at once, and the ids are computable
+# rather than looked up: `uid = game_id << 32 | legacy_id`, for both mods and
+# file versions. So the status of an entire modlist costs one request.
+#
+# Nexus badges these endpoints **Experimental** -- "may change significantly or
+# be removed", with no deprecation window (the 90-day promise covers Stable
+# only). They were adopted deliberately with that understood.
+#
+# v3 has no equivalent of `mods/updated` and no changelog *read* endpoint, so
+# change detection and changelogs stay on v1.
+API_V3 = "https://api.nexusmods.com/v3"
+
+# Both batch endpoints cap at 2000 ids per request.
+BATCH_LIMIT = 2000
+
+
+def composite_uid(game_id: int, legacy_id: int) -> str:
+    """The v3 id for a mod or file version, from its game and legacy id."""
+    return str((int(game_id) << 32) | int(legacy_id))
+
+
+def legacy_id(uid, game_id: int) -> int:
+    """The inverse of :func:`composite_uid`."""
+    return int(uid) - (int(game_id) << 32)
+
 # The v1 API accepts an OAuth bearer token on every mod/game endpoint, but
 # ``users/validate`` is API-key only -- OAuth sessions identify themselves via
 # the accounts service instead (see ``nxmaccessmanager.cpp:195``).
@@ -75,12 +105,13 @@ class Response:
 
 
 class _Pending:
-    __slots__ = ("url", "callback", "tag")
+    __slots__ = ("url", "callback", "tag", "payload")
 
-    def __init__(self, url, callback, tag):
+    def __init__(self, url, callback, tag, payload=None):
         self.url = url
         self.callback = callback
         self.tag = tag
+        self.payload = payload  # set for the v3 batch endpoints, which are POSTs
 
 
 class NexusClient(QObject):
@@ -186,13 +217,69 @@ class NexusClient(QObject):
             ("changelogs", domain, mod_id),
         )
 
+    # -- v3 endpoints ------------------------------------------------------
+
+    def game_id(self, domain: str, sample_mod_id: int, callback) -> None:
+        """Learn a game's numeric id, needed to build every other v3 id.
+
+        There is no games endpoint on v3, but any mod on the game reports its
+        `game_id`, so one known mod is enough.
+        """
+        self._enqueue(
+            f"{API_V3}/games/{domain}/mods/{sample_mod_id}",
+            callback,
+            ("game", domain, sample_mod_id),
+        )
+
+    def mods_batch(self, domain: str, uids: list, callback) -> None:
+        """Mod-level status for up to 2000 mods in one request.
+
+        A mod that is hidden, moderated or removed contributes no row, which is
+        how delisting is detected -- for the whole modlist, every scan.
+        """
+        self._enqueue(
+            f"{API_V3}/mods/batch",
+            callback,
+            ("mods_batch", domain, len(uids)),
+            payload={"mod_ids": [str(u) for u in uids]},
+        )
+
+    def file_versions_batch(self, domain: str, uids: list, callback) -> None:
+        """Resolve file versions to their update chain and position in it."""
+        self._enqueue(
+            f"{API_V3}/mod-file-versions/batch",
+            callback,
+            ("versions_batch", domain, len(uids)),
+            payload={"version_ids": [str(u) for u in uids]},
+        )
+
+    def chain_versions(self, domain: str, chain_id, callback) -> None:
+        """Every version in one update chain, ordered by `position`."""
+        self._enqueue(
+            f"{API_V3}/mod-files/{chain_id}/versions",
+            callback,
+            ("chain", domain, str(chain_id)),
+        )
+
+    def mod_chains(self, domain: str, mod_uid, callback) -> None:
+        """The update chains on one mod page.
+
+        Only needed for mods whose installed file id MO2 never recorded, so
+        there is nothing to resolve in the batch.
+        """
+        self._enqueue(
+            f"{API_V3}/mods/{mod_uid}/files",
+            callback,
+            ("chains", domain, str(mod_uid)),
+        )
+
     # -- plumbing ----------------------------------------------------------
 
-    def _enqueue(self, url: str, callback, tag) -> None:
+    def _enqueue(self, url: str, callback, tag, payload=None) -> None:
         if self._cancelled:
             return
         self._issued += 1
-        self._queue.append(_Pending(url, callback, tag))
+        self._queue.append(_Pending(url, callback, tag, payload))
         self.queueChanged.emit(self._completed, self._issued)
         self._pump()
 
@@ -246,7 +333,13 @@ class NexusClient(QObject):
         )
         self._auth.apply_to(request.setRawHeader)
 
-        reply = self._nam.get(request)
+        if item.payload is None:
+            reply = self._nam.get(request)
+        else:
+            request.setRawHeader(b"Content-Type", b"application/json")
+            reply = self._nam.post(
+                request, json.dumps(item.payload).encode("utf-8")
+            )
         self._active += 1
         self._replies.append(reply)
         reply.finished.connect(lambda r=reply, i=item: self._on_finished(r, i))

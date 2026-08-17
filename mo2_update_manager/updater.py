@@ -1,22 +1,32 @@
 """The scan engine: decide what to ask Nexus, then classify the answers.
 
-Two modes:
+Classification runs on the **v3 API**, which models what v1 leaves to
+inference. A "mod file" there *is* the update chain an author declares, and
+every version in it carries a `position` where higher means newer. That
+replaces three heuristics the v1 path needed -- grouping files by name,
+stripping version tokens out of those names, and falling back to Nexus'
+category when version strings would not order -- each of which was the cause
+of a real misclassification.
 
-*Fast* (the default) leans on ``games/{domain}/mods/updated.json``, which
-reports every mod in a game touched inside a 1d/1w/1m window in a single
-request. Only the intersection with the installed modlist gets a follow-up
-call, plus anything never seen before and a rotating slice of stale records so
-delistings still surface without a full sweep.
+The shape of a scan:
 
-*Deep* asks about every installed mod. It is the only way to be certain about
-mods that were pulled from Nexus a long time ago, so it is offered explicitly
-rather than run on every check.
+1. **Game ids.** Every v3 id is ``game_id << 32 | legacy_id``, computed
+   locally. One request per game ever, then it is cached.
+2. **What changed.** v1 ``mods/updated`` -- one request per game, and v3 has
+   no equivalent, so this stays where it is.
+3. **Status for the whole modlist.** ``POST /v3/mods/batch``, 2000 mods per
+   request. A mod that is hidden, moderated or removed contributes no row, so
+   delisting is now checked for *every* mod on *every* scan rather than a
+   rotating slice.
+4. **Where each installed file sits.** ``POST /v3/mod-file-versions/batch``,
+   2000 per request, giving the chain and position of what you have. The
+   answer never changes for a given file, so it is cached forever.
+5. **What is newest in those chains.** ``GET /v3/mod-files/{id}/versions``,
+   one per chain, and only for chains whose mod actually changed.
 
-Each page that does get queried costs two requests -- the page for its
-availability, and its file list. The file list is what makes the comparison
-honest: an author who updates one download without bumping the page version
-would otherwise look up to date, and two MO2 mods installed from the same page
-would otherwise be indistinguishable.
+Steps 3 and 4 cost one request each for a thousand-mod profile. Step 5 is the
+only part that scales with the modlist, and only with the part of it that
+moved.
 """
 
 from __future__ import annotations
@@ -32,23 +42,36 @@ except ImportError:
 from .downloads import READY as DOWNLOAD_READY
 from .downloads import find as find_download
 from .log import get_logger, tag
+from .nexus import BATCH_LIMIT, composite_uid
 from .scanner import (
     ModEntry,
+    as_file_record,
+    choose_chain,
     is_ignored,
-    is_newer,
-    is_primary_file,
-    page_ahead_of,
-    resolve_file_line,
+    newest_in_chain,
+    position_of,
+    versions_match,
 )
 
-# Nexus only accepts these three windows.
+# Nexus only accepts these three windows on the v1 change feed.
 _PERIODS = (("1d", 1), ("1w", 7), ("1m", 28))
 
-# Statuses Nexus reports for pages that are no longer normally reachable.
+# v3 mod statuses that mean the page is not normally reachable. A mod missing
+# from a batch response is invisible for one of these reasons without saying
+# which, so absence is reported as hidden rather than guessed at.
 _GONE_STATUSES = {"removed", "wastebinned", "deleted"}
 _HIDDEN_STATUSES = {"hidden", "under_moderation", "not_published", "publish_with_game"}
 
+# How long a chain's contents are trusted before being re-fetched, for mods the
+# change feed did not mention.
+_CHAIN_TTL_DAYS = 30
+
 _log = get_logger("scan")
+
+
+def _chunks(items: list, size: int = BATCH_LIMIT):
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
 
 
 class UpdateScan(QObject):
@@ -66,19 +89,15 @@ class UpdateScan(QObject):
         self._entries: list[ModEntry] = []
         self._by_key: dict[tuple[str, int], list[ModEntry]] = {}
         self._deep = False
-        self._recheck_days = 30
-        self._max_recheck = 25
-        self._pending_domains = 0
-        self._pending_requests = 0
-        self._done_pages = 0
-        self._total_pages = 0
+        self._recheck_days = _CHAIN_TTL_DAYS
         self._notes: list[str] = []
-        self._candidates: list[tuple[str, int]] = []
-        # Pages that only need their status re-checked, not their file list:
-        # the rotating delisting sweep already has the files cached.
-        self._page_only: set = set()
-        self._replies: dict = {}
         self._downloads: dict = {}
+        self._domains: list[str] = []
+        self._changed: dict[str, set] = {}
+        self._pending = 0
+        self._done = 0
+        self._total = 0
+        self._chain_wanted: dict[str, list] = {}
         self.user: dict = {}
 
     # -- entry point -------------------------------------------------------
@@ -87,7 +106,7 @@ class UpdateScan(QObject):
         self,
         entries: list[ModEntry],
         deep: bool,
-        recheck_days: int = 30,
+        recheck_days: int = _CHAIN_TTL_DAYS,
         downloads: Optional[dict] = None,
     ) -> None:
         self._entries = entries
@@ -96,15 +115,16 @@ class UpdateScan(QObject):
         self._recheck_days = max(1, recheck_days)
         self._notes = []
         self._by_key = {}
-        self._page_only = set()
+        self._changed = {}
+        self._chain_wanted = {}
         for entry in entries:
             self._by_key.setdefault(entry.key, []).append(entry)
+        self._domains = sorted({entry.domain for entry in entries})
 
         _log.info(
             tag(
                 f"{'Deep' if deep else 'Quick'} scan starting: {len(entries)} mod(s) "
-                f"across {len(self._by_key)} Nexus page(s), "
-                f"{len({e.domain for e in entries})} game(s)"
+                f"across {len(self._by_key)} Nexus page(s), {len(self._domains)} game(s)"
             )
         )
 
@@ -115,44 +135,73 @@ class UpdateScan(QObject):
         self.progress.emit("Checking your Nexus login...", 0, 0)
         self._client.validate(self._on_validated)
 
-    # -- phase 1: credentials ---------------------------------------------
-
     def _on_validated(self, response) -> None:
         if not response.ok:
             self.failed.emit(response.error)
             return
-
         self.user = response.data or {}
         self.identified.emit(self.user)
-        self._begin_domains()
+        self._begin_game_ids()
 
-    # -- phase 2: which pages are worth asking about -----------------------
+    # -- phase 1: game ids -------------------------------------------------
 
-    def _begin_domains(self) -> None:
-        domains = sorted({entry.domain for entry in self._entries})
-
-        if self._deep:
-            self._candidates = sorted(self._by_key.keys())
-            for domain in domains:
-                self._cache.mark_scan(domain, full=True)
-            self._begin_page_lookups()
+    def _begin_game_ids(self) -> None:
+        missing = [d for d in self._domains if not self._cache.game_id(d)]
+        if not missing:
+            self._begin_change_feed()
             return
 
-        self._candidates = []
-        self._pending_domains = len(domains)
-        for domain in domains:
+        self.progress.emit("Identifying games...", 0, 0)
+        self._pending = len(missing)
+        for domain in missing:
+            sample = next(k[1] for k in self._by_key if k[0] == domain)
+            self._client.game_id(domain, sample, self._on_game_id)
+
+    def _on_game_id(self, response) -> None:
+        _, domain, _ = response.tag
+        if response.ok:
+            data = (response.data or {}).get("data") or {}
+            if data.get("game_id"):
+                self._cache.put_game_id(domain, int(data["game_id"]))
+                _log.debug(tag(f"{domain} is game id {data['game_id']}"))
+        else:
+            self._notes.append(f"{domain}: could not be identified ({response.error}).")
+            _log.warning(tag(f"Could not resolve game id for {domain}: {response.error}"))
+
+        self._pending -= 1
+        if self._pending <= 0:
+            self._begin_change_feed()
+
+    # -- phase 2: what changed ---------------------------------------------
+
+    def _begin_change_feed(self) -> None:
+        usable = [d for d in self._domains if self._cache.game_id(d)]
+        if not usable:
+            self.failed.emit(
+                "No game could be identified on Nexus, so nothing could be checked."
+            )
+            return
+        self._domains = usable
+
+        if self._deep:
+            for domain in self._domains:
+                self._changed[domain] = None  # None means "everything"
+                self._cache.mark_scan(domain, full=True)
+            self._begin_status()
+            return
+
+        self._pending = len(self._domains)
+        for domain in self._domains:
             period = self._period_for(domain)
             if period is None:
-                # Cache is too old for any window Nexus offers; sweep this game.
+                self._changed[domain] = None
+                self._cache.mark_scan(domain, full=True)
                 self._notes.append(
                     f"{domain}: last check was too long ago for a quick lookup, "
                     "so every mod was queried."
                 )
-                self._candidates.extend(key for key in self._by_key if key[0] == domain)
-                self._cache.mark_scan(domain, full=True)
-                self._domain_done()
+                self._feed_done()
                 continue
-
             self.progress.emit(f"Asking Nexus what changed in {domain}...", 0, 0)
             self._client.updated_mods(domain, period, self._on_updated_list)
 
@@ -168,310 +217,342 @@ class UpdateScan(QObject):
 
     def _on_updated_list(self, response) -> None:
         _, domain, _ = response.tag
-
-        if not response.ok:
+        if response.ok:
+            rows = response.data or []
+            self._changed[domain] = {
+                int(r["mod_id"]) for r in rows if r.get("mod_id")
+            }
+            self._cache.mark_scan(domain, full=False)
+        else:
             if response.unauthorized:
                 self.failed.emit(response.error)
                 return
+            self._changed[domain] = None
             self._notes.append(
                 f"{domain}: quick lookup failed ({response.error}) so every mod was queried."
             )
-            self._candidates.extend(key for key in self._by_key if key[0] == domain)
-            self._domain_done()
-            return
+        self._feed_done()
 
-        rows = response.data or []
-        changed = {int(r["mod_id"]): int(r.get("latest_file_update") or 0) for r in rows if r.get("mod_id")}
+    def _feed_done(self) -> None:
+        self._pending -= 1
+        if self._pending <= 0:
+            self._begin_status()
 
-        stale: list[tuple[float, tuple[str, int]]] = []
-        for key in self._by_key:
-            if key[0] != domain:
-                continue
-            _, mod_id = key
-            record = self._cache.get(domain, mod_id)
+    # -- phase 3: status for every mod -------------------------------------
 
-            if mod_id in changed:
-                self._candidates.append(key)
-            elif record is None or self._cache.get_files(domain, mod_id) is None:
-                # Never seen, or seen before the file list was being cached.
-                self._candidates.append(key)
-            else:
-                age = self._cache.age_days(domain, mod_id)
-                if age >= self._recheck_days:
-                    stale.append((age, key))
+    def _begin_status(self) -> None:
+        self._batches = []
+        for domain in self._domains:
+            game = self._cache.game_id(domain)
+            uids = [
+                composite_uid(game, key[1]) for key in self._by_key if key[0] == domain
+            ]
+            for chunk in _chunks(uids):
+                self._batches.append((domain, chunk))
 
-        # Re-verify the oldest records so delistings surface over time without
-        # a full sweep every run.
-        stale.sort(reverse=True)
-        rotated = [key for _, key in stale[: self._max_recheck]]
-        self._candidates.extend(rotated)
-        # These are only being looked at in case they were delisted, and that
-        # answer is on the page. Their file list is already cached, so asking
-        # for it again would double the cost of the sweep for nothing.
-        self._page_only.update(rotated)
-        if len(stale) > len(rotated):
-            self._notes.append(
-                f"{domain}: {len(stale) - len(rotated)} mod(s) are due a "
-                "delisting re-check; run a deep scan to cover them all now."
+        _log.info(
+            tag(
+                f"Checking status of {len(self._by_key)} page(s) in "
+                f"{len(self._batches)} batch request(s)"
             )
+        )
+        self.progress.emit(
+            f"Checking {len(self._by_key)} Nexus page(s)...", 0, len(self._by_key)
+        )
+        self._seen_status: dict[tuple[str, int], dict] = {}
+        self._pending = len(self._batches)
+        for domain, chunk in self._batches:
+            self._client.mods_batch(domain, chunk, self._on_status_batch)
 
-        self._cache.mark_scan(domain, full=False)
-        self._domain_done()
+    def _on_status_batch(self, response) -> None:
+        _, domain, _ = response.tag
+        game = self._cache.game_id(domain)
 
-    def _domain_done(self) -> None:
-        self._pending_domains -= 1
-        if self._pending_domains <= 0:
-            self._begin_page_lookups()
+        if response.ok:
+            for mod in ((response.data or {}).get("data") or {}).get("mods") or []:
+                try:
+                    mod_id = int(mod.get("id", 0)) - (int(game) << 32)
+                except (TypeError, ValueError):
+                    continue
+                self._seen_status[(domain, mod_id)] = mod
+        else:
+            self._notes.append(f"{domain}: status check failed ({response.error}).")
+            _log.warning(tag(f"Status batch failed for {domain}: {response.error}"))
+            if response.unauthorized:
+                self.failed.emit(response.error)
+                return
 
-    # -- phase 3: ask about each candidate page ----------------------------
+        self._pending -= 1
+        if self._pending <= 0:
+            self._apply_status()
 
-    def _begin_page_lookups(self) -> None:
-        self._candidates = sorted(set(self._candidates))
-        self._page_only &= set(self._candidates)
-        self._total_pages = len(self._candidates)
-        self._done_pages = 0
-
-        # A page normally costs two requests: the page itself for availability,
-        # and its file list. A page being re-checked only for delisting already
-        # has its files cached, so it costs one.
-        self._pending_requests = (self._total_pages * 2) - len(self._page_only)
-        self._replies = {key: {} for key in self._candidates}
-        for key in self._page_only:
-            self._replies[key]["files"] = self._cache.get_files(*key) or []
-            self._replies[key]["files_done"] = True
-
-        # Everything not queried keeps whatever the cache last knew.
-        queried = set(self._candidates)
+    def _apply_status(self) -> None:
+        """Record availability, and rule out mods there is no point checking."""
+        self._live: set = set()
         for key, entries in self._by_key.items():
-            if key in queried:
-                continue
-            record = self._cache.get(*key)
-            files = self._cache.get_files(*key)
-            for entry in entries:
-                self._apply_cached(entry, record, files)
+            domain, mod_id = key
+            mod = self._seen_status.get(key)
 
-        if not self._candidates:
-            self._complete()
+            if mod is None:
+                # No row: Nexus does not consider this mod visible.
+                for entry in entries:
+                    entry.status = ModEntry.HIDDEN
+                    entry.message = (
+                        "Not visible on Nexus -- hidden, under moderation, or removed."
+                    )
+                self._cache.put_status(domain, mod_id, "invisible", "")
+                continue
+
+            status = str(mod.get("status") or "").lower()
+            name = str(mod.get("name") or "")
+            self._cache.put_status(domain, mod_id, status or "published", name)
+            for entry in entries:
+                entry.nexus_name = name
+
+            if status in _GONE_STATUSES:
+                for entry in entries:
+                    entry.status = ModEntry.DELISTED
+                    entry.message = "Removed from Nexus."
+                continue
+            if status in _HIDDEN_STATUSES:
+                for entry in entries:
+                    entry.status = ModEntry.HIDDEN
+                    entry.message = f"Not publicly available on Nexus (status: {status})."
+                continue
+
+            self._live.add(key)
+
+        gone = len(self._by_key) - len(self._live)
+        if gone:
+            _log.info(tag(f"{gone} page(s) are not visible on Nexus"))
+        self._begin_installed()
+
+    # -- phase 4: where each installed file sits ---------------------------
+
+    def _begin_installed(self) -> None:
+        wanted: dict[str, list] = {}
+        for key in self._live:
+            domain, _ = key
+            game = self._cache.game_id(domain)
+            for entry in self._by_key[key]:
+                cached = None
+                for file_id in entry.installed_file_ids:
+                    cached = self._cache.get_installed(domain, file_id)
+                    if cached:
+                        entry.chain_id = cached.get("chain") or ""
+                        entry.chain_position = float(cached.get("position") or 0)
+                        entry.file_line = cached.get("name") or ""
+                        break
+                if cached or not entry.installed_file_ids:
+                    continue
+                for file_id in entry.installed_file_ids:
+                    wanted.setdefault(domain, []).append(
+                        composite_uid(game, file_id)
+                    )
+
+        batches = [
+            (domain, chunk)
+            for domain, uids in wanted.items()
+            for chunk in _chunks(sorted(set(uids)))
+        ]
+        if not batches:
+            self._begin_chains()
             return
 
         _log.info(
             tag(
-                f"Querying {self._total_pages} Nexus page(s) in "
-                f"{self._pending_requests} request(s); {len(self._page_only)} page(s) "
-                "need only a delisting re-check, "
-                f"{len(self._by_key) - self._total_pages} page(s) came from the cache"
+                f"Resolving {sum(len(c) for _, c in batches)} installed file(s) to "
+                f"their update chain in {len(batches)} batch request(s)"
             )
         )
-        self.progress.emit(
-            f"Checking {self._total_pages} Nexus page(s)...", 0, self._total_pages
+        self.progress.emit("Resolving installed files...", 0, 0)
+        self._pending = len(batches)
+        for domain, chunk in batches:
+            self._client.file_versions_batch(domain, chunk, self._on_installed_batch)
+
+    def _on_installed_batch(self, response) -> None:
+        _, domain, _ = response.tag
+        game = self._cache.game_id(domain)
+
+        if response.ok:
+            for version in ((response.data or {}).get("data") or {}).get("versions") or []:
+                try:
+                    file_id = int(version.get("id", 0)) - (int(game) << 32)
+                except (TypeError, ValueError):
+                    continue
+                self._cache.put_installed(domain, file_id, version)
+        else:
+            self._notes.append(
+                f"{domain}: could not resolve installed files ({response.error})."
+            )
+            _log.warning(tag(f"Installed batch failed for {domain}: {response.error}"))
+
+        self._pending -= 1
+        if self._pending <= 0:
+            self._attach_installed()
+
+    def _attach_installed(self) -> None:
+        needs_lookup: list[ModEntry] = []
+        for key in self._live:
+            domain, _ = key
+            for entry in self._by_key[key]:
+                if entry.chain_id:
+                    continue
+                for file_id in entry.installed_file_ids:
+                    cached = self._cache.get_installed(domain, file_id)
+                    if cached and cached.get("chain"):
+                        entry.chain_id = cached["chain"]
+                        entry.chain_position = float(cached.get("position") or 0)
+                        entry.file_line = cached.get("name") or ""
+                        break
+                if not entry.chain_id:
+                    needs_lookup.append(entry)
+
+        if not needs_lookup:
+            self._begin_chains()
+            return
+
+        # MO2 only began recording installed file ids at some point, so a few
+        # percent of any real profile has nothing to resolve. Those mods need
+        # their page's chains listed before they can be placed.
+        _log.info(
+            tag(f"{len(needs_lookup)} mod(s) have no recorded file id; listing chains")
         )
-        self._client.reset_progress()
-        for key in self._candidates:
+        self._pending = len(needs_lookup)
+        self._lookup = {}
+        for entry in needs_lookup:
+            game = self._cache.game_id(entry.domain)
+            uid = composite_uid(game, entry.mod_id)
+            self._lookup.setdefault(uid, []).append(entry)
+        self._pending = len(self._lookup)
+        for uid, group in self._lookup.items():
+            self._client.mod_chains(group[0].domain, uid, self._on_mod_chains)
+
+    def _on_mod_chains(self, response) -> None:
+        _, _, uid = response.tag
+        group = self._lookup.get(str(uid), [])
+
+        if response.ok:
+            chains = ((response.data or {}).get("data") or {}).get("mod_files") or []
+            for entry in group:
+                chosen = choose_chain(entry, chains)
+                if chosen:
+                    entry.chain_id = str(chosen.get("id") or "")
+                    entry.file_line = str(chosen.get("name") or "")
+        else:
+            _log.debug(tag(f"Chain listing failed for {uid}: {response.error}"))
+
+        self._pending -= 1
+        if self._pending <= 0:
+            self._begin_chains()
+
+    # -- phase 5: what is newest in each chain -----------------------------
+
+    def _begin_chains(self) -> None:
+        for key in self._live:
             domain, mod_id = key
-            self._client.mod_info(domain, mod_id, self._on_mod_info)
-            if key not in self._page_only:
-                self._client.mod_files(domain, mod_id, self._on_mod_files)
+            changed = self._changed.get(domain)
+            for entry in self._by_key[key]:
+                if not entry.chain_id:
+                    continue
+                stale = self._cache.chain_age_days(entry.chain_id) >= self._recheck_days
+                touched = changed is None or mod_id in changed
+                if touched or stale or self._cache.get_chain(entry.chain_id) is None:
+                    self._chain_wanted.setdefault(entry.chain_id, []).append(entry)
 
-    def _on_mod_info(self, response) -> None:
-        _, domain, mod_id = response.tag
-        key = (domain, mod_id)
-        state = self._replies.get(key)
-        if state is None:
+        self._total = len(self._chain_wanted)
+        self._done = 0
+        if not self._chain_wanted:
+            self._classify()
             return
 
+        _log.info(tag(f"Fetching {self._total} update chain(s)"))
+        self.progress.emit(f"Checking {self._total} update chain(s)...", 0, self._total)
+        self._pending = self._total
+        for chain_id, group in self._chain_wanted.items():
+            self._client.chain_versions(group[0].domain, chain_id, self._on_chain)
+
+    def _on_chain(self, response) -> None:
+        _, _, chain_id = response.tag
         if response.ok:
-            data = response.data or {}
-            status = str(data.get("status") or "").lower() or "published"
-            available = data.get("available")
-            page = {
-                "status": status,
-                "available": True if available is None else bool(available),
-                "version": str(data.get("version") or ""),
-                "name": str(data.get("name") or ""),
-                "updated": int(data.get("updated_timestamp") or 0),
-            }
-            state["page"] = page
-            self._cache.put(
-                domain,
-                mod_id,
-                version=page["version"],
-                name=page["name"],
-                status=page["status"],
-                available=page["available"],
-                latest_file_update=page["updated"],
-            )
-
-        elif response.missing:
-            state["page"] = {
-                "status": "deleted",
-                "available": False,
-                "version": "",
-                "name": "",
-                "updated": 0,
-            }
-            self._cache.put(
-                domain,
-                mod_id,
-                version="",
-                name="",
-                status="deleted",
-                available=False,
-                latest_file_update=0,
-            )
-
+            versions = ((response.data or {}).get("data") or {}).get("versions") or []
+            self._cache.put_chain(chain_id, versions)
         else:
-            state["page_error"] = response.error
-            if response.unauthorized:
-                self._settle(key, "page")
-                self.failed.emit(response.error)
-                return
-
-        self._settle(key, "page")
-
-    def _on_mod_files(self, response) -> None:
-        _, domain, mod_id = response.tag
-        key = (domain, mod_id)
-        state = self._replies.get(key)
-        if state is None:
-            return
-
-        if response.ok:
-            files = (response.data or {}).get("files") or []
-            state["files"] = files
-            self._cache.put_files(domain, mod_id, files)
-        else:
-            # A missing file list is not fatal; the page version still gives a
-            # usable, if coarser, answer.
-            state["files"] = self._cache.get_files(domain, mod_id) or []
-
-        self._settle(key, "files")
-
-    def _settle(self, key, which: str) -> None:
-        state = self._replies.get(key)
-        if state is None:
-            return
-        if state.get(which + "_done"):
-            return
-        state[which + "_done"] = True
-
-        # Classify before counting: _count_request finishes the whole scan when
-        # the last request lands, and the results have to be in by then.
-        if state.get("page_done") and state.get("files_done"):
-            self._classify(key, state)
-        self._count_request(key)
-
-    # -- phase 4: classify -------------------------------------------------
-
-    def _classify(self, key, state: dict) -> None:
-        entries = self._by_key.get(key, [])
-        page = state.get("page")
-        files = state.get("files") or []
-
-        if page is None:
-            error = state.get("page_error") or "Could not be checked."
-            for entry in entries:
+            _log.debug(tag(f"Chain {chain_id} failed: {response.error}"))
+            for entry in self._chain_wanted.get(str(chain_id), []):
                 entry.status = ModEntry.ERROR
-                entry.message = error
+                entry.message = response.error
+
+        self._done += 1
+        self.progress.emit(
+            f"Checked {self._done} of {self._total} update chain(s)...",
+            self._done,
+            self._total,
+        )
+        self._pending -= 1
+        if self._pending <= 0:
+            self._classify()
+
+    # -- classify ----------------------------------------------------------
+
+    def _classify(self) -> None:
+        for key in self._live:
+            for entry in self._by_key[key]:
+                if entry.status in (ModEntry.DELISTED, ModEntry.HIDDEN, ModEntry.ERROR):
+                    continue
+                self._decide(entry)
+        self._complete()
+
+    def _decide(self, entry: ModEntry) -> None:
+        versions = self._cache.get_chain(entry.chain_id) if entry.chain_id else None
+        if not versions:
+            entry.status = ModEntry.UNCHECKED
+            entry.message = (
+                "Could not work out which upload this came from."
+                if not entry.chain_id
+                else "No version information for this mod's update chain."
+            )
             return
 
-        status = page["status"]
-        if status in _GONE_STATUSES:
-            verdict, note = ModEntry.DELISTED, "Removed from Nexus."
-        elif not page["available"] or status in _HIDDEN_STATUSES:
-            verdict = ModEntry.HIDDEN
-            note = f"Not publicly available on Nexus (status: {status})."
-        else:
-            verdict, note = None, ""
+        newest = newest_in_chain(versions)
+        entry.latest_file = as_file_record(newest)
+        entry.latest_version = entry.latest_file["version"]
+        entry.file_line = entry.file_line or entry.latest_file["name"]
+        if entry.picked_file_id is None:
+            entry.picked_file_id = entry.latest_file["file_id"] or None
 
-        for entry in entries:
-            entry.nexus_name = page["name"]
-            entry.files = files or None
-            if verdict is not None:
-                entry.status = verdict
-                entry.message = note
-                entry.latest_version = page["version"]
-                continue
-            self._compare(entry, page, files)
+        installed_position = entry.chain_position
+        if not installed_position:
+            # The file id was never recorded, so position within the chain is
+            # unknown. Fall back to matching the installed version string.
+            match = next(
+                (
+                    v
+                    for v in versions
+                    if versions_match(entry.installed_version, str(v.get("version") or ""))
+                ),
+                None,
+            )
+            installed_position = position_of(match) if match else 0.0
+            entry.chain_position = installed_position
 
-    def _compare(self, entry: ModEntry, page: dict, files: list) -> None:
-        """Decide update-or-not for one mod against its own file line."""
-        installed, latest = resolve_file_line(entry, files)
-
-        if latest is not None:
-            entry.file_line = str(installed.get("name") or "")
-            entry.latest_file = latest
-            entry.latest_version = str(latest.get("version") or "")
-            entry.latest_file_update = int(latest.get("uploaded_timestamp") or 0)
-            if entry.picked_file_id is None:
-                entry.picked_file_id = latest.get("file_id")
-
-            if installed.get("file_id") != latest.get("file_id"):
-                # resolve_file_line only hands back a different file when it is
-                # a real successor -- a higher version, or a live upload that
-                # replaced one Nexus has since marked OLD_VERSION. Re-testing
-                # the version strings here would veto the second case, which is
-                # the one that exists precisely because the strings cannot be
-                # ordered.
-                entry.status = ModEntry.UPDATE
-                entry.message = ""
-            elif self._page_moved_on(installed, page):
-                # This file line is current, but the page has moved past it --
-                # typically an optional add-on for a main file that has since
-                # been updated. MO2 reports that as an update. It is not one:
-                # there is no newer file to fetch, so this is an annotation on
-                # an up-to-date mod rather than a category of its own.
-                entry.status = ModEntry.CURRENT
-                entry.page_note = page.get("version", "")
-                entry.latest_version = entry.page_note or entry.latest_version
-                entry.message = (
-                    f"Your file is the newest of its kind. The page itself is now at "
-                    f"{entry.page_note}, so check it if this stops working."
-                )
-            else:
-                entry.status = ModEntry.CURRENT
-                entry.message = ""
-
-            self._note_download(entry)
-            return
-
-        # No file line could be matched, so fall back to the page version.
-        entry.latest_version = page.get("version", "")
-        entry.latest_file_update = page.get("updated") or entry.latest_file_update
-        if is_newer(entry.installed_version, entry.latest_version):
+        newest_position = position_of(newest)
+        if installed_position and newest_position > installed_position:
             entry.status = ModEntry.UPDATE
-            entry.message = "Matched on the page version; check the file yourself."
+            entry.message = ""
             self._note_download(entry)
+        elif not installed_position:
+            entry.status = ModEntry.UNCHECKED
+            entry.message = (
+                "MO2 did not record which file this came from, and its version "
+                "does not match any upload in the chain."
+            )
         else:
             entry.status = ModEntry.CURRENT
             entry.message = ""
 
-    @staticmethod
-    def _page_moved_on(installed: dict, page: dict) -> bool:
-        """True when the page's own version has run past the installed file.
-
-        Deliberately narrow. A Nexus page gains uploads constantly --
-        translations, optional extras, patches -- and none of those mean the
-        file you have is stale. An earlier version of this checked for *any*
-        newer upload and flagged eleven mods that were perfectly current,
-        because someone had added a French translation.
-
-        Two conditions, both required:
-
-        * The installed file is not the page's primary upload. If it is, the
-          page version tracks it by definition and can never be ahead.
-        * The page version genuinely parses as newer than the file's version.
-        """
-        if is_primary_file(installed):
-            return False
-        return page_ahead_of(
-            str(installed.get("version") or ""), str(page.get("version") or "")
-        )
-
     def _note_download(self, entry: ModEntry) -> None:
-        """Flag updates whose file is already sitting in MO2's downloads."""
-        if entry.status != ModEntry.UPDATE:
-            return
-
+        """Flag updates that are ignored, or already sitting in the downloads."""
         if is_ignored(entry):
             entry.status = ModEntry.IGNORED
             entry.message = f"Update to {entry.latest_version} ignored in MO2."
@@ -480,8 +561,9 @@ class UpdateScan(QObject):
         if not self._downloads:
             return
 
-        file_id = (entry.latest_file or {}).get("file_id")
-        info = find_download(self._downloads, entry.mod_id, file_id)
+        info = find_download(
+            self._downloads, entry.mod_id, (entry.latest_file or {}).get("file_id")
+        )
         if info is None or not info.usable:
             return
 
@@ -493,57 +575,7 @@ class UpdateScan(QObject):
             else "Already downloaded (MO2 has installed this archive before)."
         )
 
-    def _count_request(self, key) -> None:
-        self._pending_requests -= 1
-        done = sum(
-            1
-            for state in self._replies.values()
-            if state.get("page_done") and state.get("files_done")
-        )
-        if done != self._done_pages:
-            self._done_pages = done
-            self.progress.emit(
-                f"Checked {done} of {self._total_pages} Nexus page(s)...",
-                done,
-                self._total_pages,
-            )
-        if self._pending_requests <= 0:
-            self._complete()
-
-    # -- phase 5: wrap up --------------------------------------------------
-
-    def _apply_cached(
-        self, entry: ModEntry, record: Optional[dict], files: Optional[list]
-    ) -> None:
-        if not record:
-            entry.status = ModEntry.UNCHECKED
-            entry.message = "Not checked yet."
-            return
-
-        entry.nexus_name = record.get("name", "")
-        entry.files = files or None
-        status = str(record.get("status") or "")
-
-        if status in _GONE_STATUSES:
-            entry.latest_version = record.get("version", "")
-            entry.status = ModEntry.DELISTED
-            entry.message = "Removed from Nexus (from the last check)."
-            return
-
-        if not record.get("available", True) or status in _HIDDEN_STATUSES:
-            entry.latest_version = record.get("version", "")
-            entry.status = ModEntry.HIDDEN
-            entry.message = "Not publicly available on Nexus (from the last check)."
-            return
-
-        self._compare(
-            entry,
-            {
-                "version": record.get("version", ""),
-                "updated": int(record.get("latest_file_update") or 0),
-            },
-            files or [],
-        )
+    # -- wrap up -----------------------------------------------------------
 
     def _complete(self) -> None:
         error = self._cache.save()
@@ -554,13 +586,10 @@ class UpdateScan(QObject):
         counts: dict = {}
         for entry in self._entries:
             counts[entry.status] = counts.get(entry.status, 0) + 1
-        moved = sum(1 for e in self._entries if e.page_note)
         _log.info(
             tag(
                 "Scan finished: "
-                + (", ".join(f"{n} {status}" for status, n in sorted(counts.items()))
-                   or "nothing")
-                + (f"; {moved} on a page that moved on" if moved else "")
+                + (", ".join(f"{n} {s}" for s, n in sorted(counts.items())) or "nothing")
             )
         )
         for entry in self._entries:
@@ -569,19 +598,11 @@ class UpdateScan(QObject):
                     tag(
                         f"{entry.status} [{entry.domain}/{entry.mod_id}] "
                         f"{entry.display_name}: installed "
-                        f"{entry.installed_version or '?'}, line "
-                        f"{entry.file_line or 'unmatched'!r}, latest "
+                        f"{entry.installed_version or '?'} (chain {entry.chain_id or '-'} "
+                        f"pos {entry.chain_position}), latest "
                         f"{entry.latest_version or '?'}"
                         + (f" ({entry.message})" if entry.message else "")
                     )
                 )
-
-        pages = len(self._by_key)
-        if self._total_pages < pages and not self._deep:
-            self._notes.insert(
-                0,
-                f"Queried {self._total_pages} of {pages} Nexus page(s); the rest came "
-                "from the cache.",
-            )
 
         self.finished.emit(self._entries, "  ".join(self._notes))
