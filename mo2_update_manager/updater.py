@@ -39,7 +39,7 @@ try:
 except ImportError:
     from PyQt6.QtCore import QObject, pyqtSignal
 
-from .downloads import READY as DOWNLOAD_READY
+
 from .downloads import find as find_download
 from .log import get_logger, tag
 from .nexus import BATCH_LIMIT, composite_uid
@@ -47,10 +47,11 @@ from .scanner import (
     ModEntry,
     as_file_record,
     choose_chain,
+    current_in_chain,
+    find_in_chain,
     is_ignored,
-    newest_in_chain,
+    is_retired,
     position_of,
-    versions_match,
 )
 
 # Nexus only accepts these three windows on the v1 change feed.
@@ -514,40 +515,36 @@ class UpdateScan(QObject):
             )
             return
 
-        newest = newest_in_chain(versions)
-        entry.latest_file = as_file_record(newest)
+        current = current_in_chain(versions)
+        entry.latest_file = as_file_record(current)
         entry.latest_version = entry.latest_file["version"]
         entry.file_line = entry.file_line or entry.latest_file["name"]
         if entry.picked_file_id is None:
             entry.picked_file_id = entry.latest_file["file_id"] or None
 
-        installed_position = entry.chain_position
-        if not installed_position:
-            # The file id was never recorded, so position within the chain is
-            # unknown. Fall back to matching the installed version string.
-            match = next(
-                (
-                    v
-                    for v in versions
-                    if versions_match(entry.installed_version, str(v.get("version") or ""))
-                ),
-                None,
-            )
-            installed_position = position_of(match) if match else 0.0
-            entry.chain_position = installed_position
-
-        newest_position = position_of(newest)
-        if installed_position and newest_position > installed_position:
-            entry.status = ModEntry.UPDATE
-            entry.message = ""
-            self._note_download(entry)
-        elif not installed_position:
+        installed = find_in_chain(
+            versions, entry.installed_file_ids, entry.installed_version
+        )
+        if installed is None:
             entry.status = ModEntry.UNCHECKED
             entry.message = (
                 "MO2 did not record which file this came from, and its version "
                 "does not match any upload in the chain."
             )
+            return
+        entry.chain_position = position_of(installed)
+
+        same_file = installed.get("game_scoped_id") == current.get("game_scoped_id")
+        if same_file:
+            entry.status = ModEntry.CURRENT
+            entry.message = ""
+        elif is_retired(installed) or position_of(current) > entry.chain_position:
+            entry.status = ModEntry.UPDATE
+            entry.message = ""
+            self._note_download(entry)
         else:
+            # A different file that Nexus has neither retired nor promoted --
+            # another current upload on the same chain. Not an update.
             entry.status = ModEntry.CURRENT
             entry.message = ""
 
@@ -564,15 +561,27 @@ class UpdateScan(QObject):
         info = find_download(
             self._downloads, entry.mod_id, (entry.latest_file or {}).get("file_id")
         )
-        if info is None or not info.usable:
+        if info is None:
+            return
+
+        if not info.usable:
+            # The archive is there but MO2 has installed it before, so it is not
+            # waiting for anything. Say so on the row rather than moving it into
+            # the install queue -- and note that autohide means the user will
+            # not find it in the Downloads tab.
+            entry.message = (
+                f"The file is in your downloads ({info.file_name}) but MO2 has "
+                "installed that archive already"
+                + (", and it is hidden from the Downloads tab." if info.hidden else ".")
+            )
             return
 
         entry.download = info
         entry.status = ModEntry.DOWNLOADED
         entry.message = (
-            "Already downloaded, not installed."
-            if info.state == DOWNLOAD_READY
-            else "Already downloaded (MO2 has installed this archive before)."
+            "Already downloaded, hidden from the Downloads tab."
+            if info.hidden
+            else "Already downloaded, not installed."
         )
 
     # -- wrap up -----------------------------------------------------------

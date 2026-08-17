@@ -21,9 +21,20 @@ INCOMPLETE = "incomplete"  # download was interrupted
 
 
 class DownloadInfo:
-    __slots__ = ("mod_id", "file_id", "file_name", "path", "meta_path", "version", "state")
+    __slots__ = (
+        "mod_id",
+        "file_id",
+        "file_name",
+        "path",
+        "meta_path",
+        "version",
+        "state",
+        "hidden",
+    )
 
-    def __init__(self, mod_id, file_id, file_name, path, meta_path, version, state):
+    def __init__(
+        self, mod_id, file_id, file_name, path, meta_path, version, state, hidden=False
+    ):
         self.mod_id = mod_id
         self.file_id = file_id
         self.file_name = file_name
@@ -31,10 +42,22 @@ class DownloadInfo:
         self.meta_path = meta_path
         self.version = version
         self.state = state
+        # MO2 hides a download by writing removed=true; the archive is still on
+        # disk but the Downloads tab does not show it. Worth knowing, because
+        # telling someone a file is downloaded when they cannot see it reads as
+        # a bug.
+        self.hidden = hidden
 
     @property
     def usable(self) -> bool:
-        return self.state in (READY, INSTALLED)
+        """Whether this archive is genuinely waiting to be installed.
+
+        An archive MO2 has already installed is not. It used to count, which
+        put mods in "Downloaded, waiting to be installed" that had in fact been
+        installed and then hidden -- invisible in the Downloads tab, so the
+        claim looked simply false.
+        """
+        return self.state == READY
 
     def __repr__(self):
         return f"<DownloadInfo {self.file_name!r} {self.state}>"
@@ -120,6 +143,7 @@ def scan(downloads_path: str) -> dict[tuple[int, int], DownloadInfo]:
             meta_path,
             values.get("version") or "",
             state,
+            (values.get("removed") or "").lower() == "true",
         )
 
     return index

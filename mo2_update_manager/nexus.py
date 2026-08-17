@@ -104,14 +104,21 @@ class Response:
         return f"<Response ok={self.ok} status={self.status} tag={self.tag!r}>"
 
 
+# A server error or a dropped connection says nothing about the request, so it
+# is worth repeating. A scan of a thousand chains will meet one eventually --
+# one 500 cost a mod its result on a real run.
+MAX_RETRIES = 2
+
+
 class _Pending:
-    __slots__ = ("url", "callback", "tag", "payload")
+    __slots__ = ("url", "callback", "tag", "payload", "attempts")
 
     def __init__(self, url, callback, tag, payload=None):
         self.url = url
         self.callback = callback
         self.tag = tag
         self.payload = payload  # set for the v3 batch endpoints, which are POSTs
+        self.attempts = 0
 
 
 class NexusClient(QObject):
@@ -371,6 +378,19 @@ class NexusClient(QObject):
                 )
                 return
             self._finish(item, Response(True, status, data, "", item.tag))
+            return
+
+        # Retry a server error or a dropped connection; a 4xx is an answer.
+        if (status >= 500 or status == 0) and item.attempts < MAX_RETRIES:
+            item.attempts += 1
+            _log.debug(
+                _tag(
+                    f"Retrying {item.tag} after {status or 'network error'} "
+                    f"(attempt {item.attempts + 1} of {MAX_RETRIES + 1})"
+                )
+            )
+            self._queue.appendleft(item)
+            self._pump()
             return
 
         error = self._describe(status, reply, payload)

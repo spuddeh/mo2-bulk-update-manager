@@ -483,9 +483,82 @@ def position_of(version: dict) -> float:
         return 0.0
 
 
+# v3 spells these lower-case; they mean the same as the v1 categories.
+_RETIRED = ("archived", "old_version")
+
+
+def is_retired(version: dict) -> bool:
+    return str((version or {}).get("category") or "").lower() in _RETIRED
+
+
+def current_in_chain(versions: list) -> Optional[dict]:
+    """The version of a chain a person should actually have.
+
+    Not simply the highest `position`. Position records where an upload sits in
+    the chain, and an author who back-fills old files gets them appended at the
+    end: chain 7237540 has v1.07 (main, primary) at position 3.77 and an
+    archived "v1.04 do not download" at 4.0. Taking the maximum there reports a
+    downgrade as an update.
+
+    `is_primary` is Nexus' own statement of which file is the current download,
+    so it wins. Failing that, the newest upload that has not been retired.
+    """
+    if not versions:
+        return None
+
+    # `category` is the one field that holds up. Neither of the obvious
+    # alternatives does:
+    #
+    # * **Highest position** fails when an author back-fills old uploads --
+    #   chain 7237540 has an archived "v1.04 do not download" at position 4.0
+    #   above the live v1.07 at 3.77.
+    # * **is_primary** fails the same way and more often: in four of five
+    #   chains examined it was set on an *archived* upload holding the highest
+    #   whole-numbered position, while the file people actually want sat just
+    #   below it at a fractional position. Chain 2764699: v2.0.17 archived and
+    #   primary at 31.0, v2.0.21 main at 30.9.
+    mains = [v for v in versions if str(v.get("category") or "").lower() == "main"]
+    if mains:
+        return max(mains, key=position_of)
+
+    live = [v for v in versions if not is_retired(v)]
+    if live:
+        return max(live, key=position_of)
+
+    primary = [v for v in versions if v.get("is_primary")]
+    return max(primary or versions, key=position_of)
+
+
+def find_in_chain(
+    versions: list, file_ids, installed_version: str = ""
+) -> Optional[dict]:
+    """Locate the installed upload inside its chain.
+
+    By file id when MO2 recorded one -- `game_scoped_id` is that same id -- and
+    otherwise by version string, which is all there is to go on.
+    """
+    if not versions:
+        return None
+
+    wanted = {int(f) for f in (file_ids or [])}
+    if wanted:
+        for version in versions:
+            try:
+                if int(version.get("game_scoped_id") or 0) in wanted:
+                    return version
+            except (TypeError, ValueError):
+                continue
+
+    if installed_version:
+        for version in versions:
+            if versions_match(installed_version, str(version.get("version") or "")):
+                return version
+    return None
+
+
 def newest_in_chain(versions: list) -> Optional[dict]:
-    """The current version of an update chain."""
-    return max(versions, key=position_of) if versions else None
+    """Deprecated alias kept for the offline harnesses."""
+    return current_in_chain(versions)
 
 
 def as_file_record(version: dict) -> dict:
