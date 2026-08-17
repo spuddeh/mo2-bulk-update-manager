@@ -357,7 +357,10 @@ class UpdateScan(QObject):
             for chunk in _chunks(sorted(set(uids)))
         ]
         if not batches:
-            self._begin_chains()
+            # Nothing to resolve does not mean nothing to do: mods with no
+            # recorded file id are placed in _attach_installed, and skipping
+            # straight past it left them unclassified on every cached run.
+            self._attach_installed()
             return
 
         _log.info(
@@ -406,7 +409,14 @@ class UpdateScan(QObject):
                         entry.chain_position = float(cached.get("position") or 0)
                         entry.file_line = cached.get("name") or ""
                         break
-                if not entry.chain_id:
+                if entry.chain_id:
+                    continue
+                # Resolved on an earlier scan and remembered, so the chain
+                # listing does not have to be repeated.
+                remembered = self._cache.get_mod_chain(*key)
+                if remembered:
+                    entry.chain_id, entry.file_line = remembered
+                else:
                     needs_lookup.append(entry)
 
         if not needs_lookup:
@@ -440,6 +450,16 @@ class UpdateScan(QObject):
                 if chosen:
                     entry.chain_id = str(chosen.get("id") or "")
                     entry.file_line = str(chosen.get("name") or "")
+                    self._cache.put_mod_chain(
+                        entry.domain, entry.mod_id, entry.chain_id, entry.file_line
+                    )
+                else:
+                    _log.debug(
+                        tag(
+                            f"No chain matched {entry.display_name} "
+                            f"({len(chains)} on the page)"
+                        )
+                    )
         else:
             _log.debug(tag(f"Chain listing failed for {uid}: {response.error}"))
 

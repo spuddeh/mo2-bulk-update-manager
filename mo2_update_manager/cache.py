@@ -200,6 +200,24 @@ class ScanCache:
             return float("inf")
         return max(0.0, (time.time() - record.get("checked", 0)) / 86400.0)
 
+    def put_mod_chain(self, domain: str, mod_id: int, chain_id: str, name: str) -> None:
+        """Remember the chain a mod resolved to when it had no file id to use.
+
+        Without this the chain listing has to be repeated on every scan, for
+        every mod MO2 never recorded an installed file for -- 26 of 543 on one
+        real profile.
+        """
+        record = self._mods.setdefault(self._key(domain, mod_id), {})
+        record["chain"] = str(chain_id)
+        record["chain_name"] = name
+        self._dirty = True
+
+    def get_mod_chain(self, domain: str, mod_id: int) -> Optional[tuple]:
+        record = self.get(domain, mod_id)
+        if not record or not record.get("chain"):
+            return None
+        return record["chain"], record.get("chain_name") or ""
+
     def put_status(self, domain: str, mod_id: int, status: str, name: str) -> None:
         record = self._mods.setdefault(self._key(domain, mod_id), {})
         record.update(
