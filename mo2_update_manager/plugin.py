@@ -9,7 +9,7 @@ import mobase
 
 from ._version import VERSION
 from .dialog import DEFAULT_FILE_CATEGORIES, UpdateManagerDialog
-from .log import get_logger
+from .log import get_logger, tag
 
 _log = get_logger()
 
@@ -121,10 +121,10 @@ class UpdateManagerPlugin(mobase.IPluginTool):
     def display(self):
         game = self._organizer.managedGame()
         _log.info(
-            "Update Manager %s opening (MO2 %s, game %s)",
-            VERSION,
-            self._organizer.version(),
-            game.gameShortName() if game else "unknown",
+            tag(
+                f"Update Manager {VERSION} opening (MO2 {self._organizer.version()}, "
+                f"game {game.gameShortName() if game else 'unknown'})"
+            )
         )
         dialog = UpdateManagerDialog(self._organizer, PLUGIN_NAME, self._parent)
         dialog.exec()

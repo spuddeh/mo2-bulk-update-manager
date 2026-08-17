@@ -31,7 +31,7 @@ except ImportError:
 
 from .downloads import READY as DOWNLOAD_READY
 from .downloads import find as find_download
-from .log import get_logger
+from .log import get_logger, tag
 from .scanner import (
     ModEntry,
     is_ignored,
@@ -101,11 +101,11 @@ class UpdateScan(QObject):
             self._by_key.setdefault(entry.key, []).append(entry)
 
         _log.info(
-            "%s scan starting: %d mod(s) across %d Nexus page(s), %d game(s)",
-            "Deep" if deep else "Quick",
-            len(entries),
-            len(self._by_key),
-            len({e.domain for e in entries}),
+            tag(
+                f"{'Deep' if deep else 'Quick'} scan starting: {len(entries)} mod(s) "
+                f"across {len(self._by_key)} Nexus page(s), "
+                f"{len({e.domain for e in entries})} game(s)"
+            )
         )
 
         if not entries:
@@ -255,12 +255,12 @@ class UpdateScan(QObject):
             return
 
         _log.info(
-            "Querying %d Nexus page(s) in %d request(s); %d page(s) need only a "
-            "delisting re-check, %d page(s) came from the cache",
-            self._total_pages,
-            self._pending_requests,
-            len(self._page_only),
-            len(self._by_key) - self._total_pages,
+            tag(
+                f"Querying {self._total_pages} Nexus page(s) in "
+                f"{self._pending_requests} request(s); {len(self._page_only)} page(s) "
+                "need only a delisting re-check, "
+                f"{len(self._by_key) - self._total_pages} page(s) came from the cache"
+            )
         )
         self.progress.emit(
             f"Checking {self._total_pages} Nexus page(s)...", 0, self._total_pages
@@ -405,16 +405,13 @@ class UpdateScan(QObject):
             if entry.picked_file_id is None:
                 entry.picked_file_id = latest.get("file_id")
 
-            if installed.get("file_id") != latest.get("file_id") and is_newer(
-                entry.installed_version, entry.latest_version
-            ):
-                # A different file id at the *same* version is not an update.
-                # It used to be reported as "newer upload with the same version
-                # number", on the theory that it meant a silent re-upload. On a
-                # 543-mod list that fired four times and was wrong every time:
-                # a main file beside a miscellaneous one, an optional 1k
-                # texture pack beside the full-size main, an archived copy of
-                # the file already installed. Alternatives, not successors.
+            if installed.get("file_id") != latest.get("file_id"):
+                # resolve_file_line only hands back a different file when it is
+                # a real successor -- a higher version, or a live upload that
+                # replaced one Nexus has since marked OLD_VERSION. Re-testing
+                # the version strings here would veto the second case, which is
+                # the one that exists precisely because the strings cannot be
+                # ordered.
                 entry.status = ModEntry.UPDATE
                 entry.message = ""
             elif self._page_moved_on(installed, page):
@@ -551,31 +548,32 @@ class UpdateScan(QObject):
     def _complete(self) -> None:
         error = self._cache.save()
         if error:
-            _log.error("%s", error)
+            _log.error(tag(error))
             self._notes.append(error)
 
         counts: dict = {}
         for entry in self._entries:
             counts[entry.status] = counts.get(entry.status, 0) + 1
+        moved = sum(1 for e in self._entries if e.page_note)
         _log.info(
-            "Scan finished: %s%s",
-            ", ".join(f"{n} {status}" for status, n in sorted(counts.items())) or "nothing",
-            f"; {sum(1 for e in self._entries if e.page_note)} on a page that moved on"
-            if any(e.page_note for e in self._entries)
-            else "",
+            tag(
+                "Scan finished: "
+                + (", ".join(f"{n} {status}" for status, n in sorted(counts.items()))
+                   or "nothing")
+                + (f"; {moved} on a page that moved on" if moved else "")
+            )
         )
         for entry in self._entries:
             if entry.status != ModEntry.CURRENT:
                 _log.debug(
-                    "%s [%s/%s] %s: installed %s, line %r, latest %s%s",
-                    entry.status,
-                    entry.domain,
-                    entry.mod_id,
-                    entry.display_name,
-                    entry.installed_version or "?",
-                    entry.file_line or "unmatched",
-                    entry.latest_version or "?",
-                    f" ({entry.message})" if entry.message else "",
+                    tag(
+                        f"{entry.status} [{entry.domain}/{entry.mod_id}] "
+                        f"{entry.display_name}: installed "
+                        f"{entry.installed_version or '?'}, line "
+                        f"{entry.file_line or 'unmatched'!r}, latest "
+                        f"{entry.latest_version or '?'}"
+                        + (f" ({entry.message})" if entry.message else "")
+                    )
                 )
 
         pages = len(self._by_key)

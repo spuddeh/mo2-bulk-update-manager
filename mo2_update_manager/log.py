@@ -20,13 +20,23 @@ Levels, chosen so a bug report is useful without DEBUG being turned on:
     Something failed outright.
 
 Credentials are never logged -- only which source they came from.
+
+**Format every message eagerly.** MO2's handler reads ``record.msg``
+(``pythonutils.cpp:103``), not ``record.getMessage()``, so the usual lazy
+``log.info("scanned %s mods", n)`` reaches the log file as the literal string
+``scanned %s mods``. Use an f-string. For the same reason ``exc_info`` is
+never rendered, so a traceback has to be folded into the message itself --
+that is what `log_exception` is for.
 """
 
 from __future__ import annotations
 
 import logging
+import traceback
 
 ROOT_NAME = "mo2_update_manager"
+
+PREFIX = "[UpdateManager]"
 
 
 def get_logger(name: str = "") -> logging.Logger:
@@ -34,6 +44,18 @@ def get_logger(name: str = "") -> logging.Logger:
     return logging.getLogger(f"{ROOT_NAME}.{name}" if name else ROOT_NAME)
 
 
+def tag(message: str) -> str:
+    """Mark a line as ours.
+
+    MO2 logs only the message, not the logger name, so without this the
+    plugin's lines are indistinguishable from MO2's own in a bug report.
+    """
+    return f"{PREFIX} {message}"
+
+
 def log_exception(logger: logging.Logger, message: str, exc: BaseException) -> None:
     """Record a caught exception with its traceback, without re-raising."""
-    logger.error("%s: %s: %s", message, type(exc).__name__, exc, exc_info=True)
+    trace = "".join(
+        traceback.format_exception(type(exc), exc, exc.__traceback__)
+    ).strip()
+    logger.error(tag(f"{message}: {type(exc).__name__}: {exc}\n{trace}"))

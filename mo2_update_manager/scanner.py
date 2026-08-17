@@ -348,24 +348,42 @@ def _newest_in_line(installed: dict, members: list) -> Optional[dict]:
         return None
 
     live = [f for f in members if not _superseded(f)]
-    if not live:
-        # The whole line has been superseded; its newest entry is still the
-        # honest answer.
-        return max(members, key=lambda f: int(f.get("uploaded_timestamp") or 0))
+    pool = live or members
 
     # The category preference only applies while the installed file is itself
     # current. Once Nexus marks it OLD_VERSION its category says nothing about
     # what it is -- every superseded upload ends up there, whatever it started
     # as -- and honouring it would hide the main file that replaced it.
-    if not _superseded(installed):
+    if live and not _superseded(installed):
         category = str(installed.get("category_name") or "").upper()
         same_kind = [
             f for f in live if str(f.get("category_name") or "").upper() == category
         ]
         if same_kind:
-            live = same_kind
+            pool = same_kind
 
-    return max(live, key=lambda f: int(f.get("uploaded_timestamp") or 0))
+    # A genuinely higher version is the clearest successor.
+    version = str(installed.get("version") or "")
+    successors = [
+        f for f in pool if is_newer(version, str(f.get("version") or ""))
+    ]
+    if successors:
+        return max(successors, key=lambda f: int(f.get("uploaded_timestamp") or 0))
+
+    # No higher version, but Nexus has marked the installed file OLD_VERSION or
+    # ARCHIVED -- which is Nexus saying outright that something replaced it.
+    # Trust that over version strings, because the strings are not always
+    # orderable: MovementAndCameraTweaks went v1.41 -> v1.5, which every
+    # semantic comparison reads as a downgrade, and the author meant it as a
+    # decimal. The categories are unambiguous where the numbers are not.
+    if _superseded(installed) and live:
+        return max(live, key=lambda f: int(f.get("uploaded_timestamp") or 0))
+
+    # The installed file is current and nothing outranks it. Returning a live
+    # sibling here would put a variant's version in the "Latest" column and
+    # read as an update that is not there -- "Lewder Nudes from Panam 2.1" and
+    # "…2.1-alternate" share a name and a category and differ only in variant.
+    return installed
 
 
 def _match_installed(entry: ModEntry, files: list) -> Optional[dict]:

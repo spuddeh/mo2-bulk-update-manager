@@ -33,6 +33,7 @@ except ImportError:
 
 from ._version import VERSION
 from .log import get_logger
+from .log import tag as _tag  # `tag` is also a parameter/attribute name here
 
 _log = get_logger("nexus")
 
@@ -207,11 +208,11 @@ class NexusClient(QObject):
         if self._out_of_budget() and self._queue and not self.throttled:
             self.throttled = True
             _log.warning(
-                "Stopping early: %s Nexus request(s) left this hour (floor %s), "
-                "%d still queued",
-                self.hourly_remaining,
-                self.hourly_floor,
-                len(self._queue),
+                _tag(
+                    f"Stopping early: {self.hourly_remaining} Nexus request(s) left "
+                    f"this hour (floor {self.hourly_floor}), {len(self._queue)} still "
+                    "queued"
+                )
             )
             # Fail the rest fast rather than hanging the dialog on a wall of 429s.
             stalled, self._queue = list(self._queue), deque()
@@ -283,7 +284,7 @@ class NexusClient(QObject):
         # 404 is an ordinary answer here -- it is how a delisted mod presents --
         # so it is not worth a warning.
         (_log.debug if status == 404 else _log.warning)(
-            "Nexus request failed: %s -> %s (%s)", item.tag, status, error
+            _tag(f"Nexus request failed: {item.tag} -> {status} ({error})")
         )
         self._finish(item, Response(False, status, None, error, item.tag))
 
@@ -313,9 +314,10 @@ class NexusClient(QObject):
                 changed = True
         if changed:
             _log.debug(
-                "Nexus budget: %s left this hour, %s today",
-                self.hourly_remaining,
-                self.daily_remaining,
+                _tag(
+                    f"Nexus budget: {self.hourly_remaining} left this hour, "
+                    f"{self.daily_remaining} today"
+                )
             )
             self.rateLimitChanged.emit(self.hourly_remaining, self.daily_remaining)
 

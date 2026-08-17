@@ -123,6 +123,8 @@ For the same reason, a file line is only widened past an exact name match when d
 
 Within a line, a successor also has to share the installed file's category — a main file is not the successor of an optional one just because it is newer. That preference is dropped once your file is marked `OLD_VERSION`, since every superseded upload ends up in that category whatever it started as.
 
+**A successor is a higher version — or Nexus saying so directly.** Version strings are not always orderable: *MovementAndCameraTweaks* went `v1.41` → `v1.5`, which every semantic comparison reads as a downgrade because 41 > 5, while the author meant it as a decimal. So when no file in the line parses as higher *and* Nexus has marked your file `OLD_VERSION` or `ARCHIVED`, the newest live upload in that line is taken as the update. Nexus's own categories are unambiguous where the numbers are not. While your file is still current, the version comparison stands — that is what keeps variants like `2.1` and `2.1-alternate` from looking like updates to each other.
+
 ## How it authenticates
 
 MO2 stores your Nexus credentials in the Windows Credential Manager. The plugin reads them so there is nothing to set up:
