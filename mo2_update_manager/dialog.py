@@ -320,7 +320,11 @@ class UpdateManagerDialog(QDialog):
         controls = QHBoxLayout()
         self._select_all = QCheckBox("Select all")
         self._select_all.setToolTip("Tick every update and every pending install.")
-        self._select_all.stateChanged.connect(self._on_select_all)
+        # Tristate so it can show "some" while rows move between groups on
+        # their own. `clicked` rather than `stateChanged`, so that programmatic
+        # syncing never looks like the user asking for something.
+        self._select_all.setTristate(True)
+        self._select_all.clicked.connect(self._on_select_all_clicked)
         controls.addWidget(self._select_all)
         controls.addStretch(1)
 
@@ -732,17 +736,51 @@ class UpdateManagerDialog(QDialog):
     def _on_item_changed(self, *_):
         self._download_btn.setEnabled(bool(self._checked_entries(_DOWNLOADABLE)))
         self._install_btn.setEnabled(bool(self._checked_entries(_INSTALLABLE)))
+        self._sync_select_all()
 
-    def _on_select_all(self, state) -> None:
-        checked = (
-            Qt.CheckState(state) == Qt.CheckState.Checked
-            if not isinstance(state, Qt.CheckState)
-            else state == Qt.CheckState.Checked
+    def _sync_select_all(self) -> None:
+        """Make the master checkbox describe the rows rather than lead them.
+
+        Rows move between groups on their own now -- a ticked update becomes an
+        untickable Downloading row the moment it is queued -- so "select all"
+        would otherwise sit there checked with nothing checked beneath it.
+        """
+        items = self._update_items()
+        checked = sum(
+            1 for item in items if item.checkState(0) == Qt.CheckState.Checked
         )
-        for item in self._update_items():
-            item.setCheckState(
-                0, Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
-            )
+
+        if not items or checked == 0:
+            state = Qt.CheckState.Unchecked
+        elif checked == len(items):
+            state = Qt.CheckState.Checked
+        else:
+            state = Qt.CheckState.PartiallyChecked
+
+        blocked = self._select_all.blockSignals(True)
+        self._select_all.setCheckState(state)
+        self._select_all.setEnabled(bool(items))
+        self._select_all.blockSignals(blocked)
+
+    def _on_select_all_clicked(self, *_) -> None:
+        items = self._update_items()
+        if not items:
+            self._sync_select_all()
+            return
+
+        # Decide from the rows, not from whatever state the click left the
+        # checkbox in -- a tristate box cycles through "partial" on its own.
+        all_checked = all(
+            item.checkState(0) == Qt.CheckState.Checked for item in items
+        )
+        target = Qt.CheckState.Unchecked if all_checked else Qt.CheckState.Checked
+        # One update at the end rather than one per row: each itemChanged would
+        # otherwise re-walk the whole tree.
+        blocked = self._tree.blockSignals(True)
+        for item in items:
+            item.setCheckState(0, target)
+        self._tree.blockSignals(blocked)
+        self._on_item_changed()
 
     def _update_items(self, statuses=_CHECKABLE) -> list:
         items = []
