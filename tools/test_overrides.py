@@ -1,0 +1,264 @@
+"""Offline checks for the ignore overrides and the per-mod note.
+
+    python tools/test_overrides.py
+
+No MO2, no Qt, no network -- ``qt_stub`` fakes just enough of both to import
+the plugin, and says what that is and is not good for. Everything checked here
+is a pure function: string formatting, version comparison, and the one place
+this plugin writes a file MO2 owns.
+
+Anything that paints, or that actually calls MO2, can only be checked by
+installing into an instance and restarting it. Adding a check here first is
+still usually faster than a round trip through MO2.
+"""
+
+import os
+import re
+import shutil
+import sys
+import tempfile
+
+_TOOLS = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_TOOLS)
+sys.path.insert(0, _TOOLS)
+
+import qt_stub  # noqa: E402
+
+qt_stub.install()
+
+sys.path.insert(0, _ROOT)
+
+from mo2_update_manager import dialog  # noqa: E402
+from mo2_update_manager.scanner import clear_ignored_version, is_ignored  # noqa: E402
+
+FAILURES = []
+
+
+def check(name, condition, detail=""):
+    if condition:
+        print(f"  ok    {name}")
+    else:
+        print(f"  FAIL  {name}   {detail!r}")
+        FAILURES.append(name)
+
+
+class FakeEntry:
+    def __init__(
+        self,
+        ignored="",
+        latest="",
+        forced="",
+        note="",
+        note_version="",
+        message="",
+        name="Winds of Cydonia",
+        row_label="",
+        nexus_name="",
+    ):
+        self.ignored_version = ignored
+        self.latest_version = latest
+        self.forced_version = forced
+        self.note = note
+        self.note_version = note_version
+        self.message = message
+        self.display_name = name
+        self.row_label = row_label
+        self.nexus_name = nexus_name
+
+
+# -- clear_ignored_version -------------------------------------------------
+
+REAL = (
+    b"[General]\r\n"
+    b"gameName=cyberpunk2077\r\n"
+    b"modid=8766\r\n"
+    b"version=1.0.0.0\r\n"
+    b"newestVersion=1.2.1.0\r\n"
+    b'category="13,"\r\n'
+    b"installationFile=1_Max Muscle - UV-8766-1-0.7z\r\n"
+    b"ignoredVersion=1.2.1.0\r\n"
+    b'nexusDescription="[font=Verdana]caf\xc3\xa9 \\n<br />[url=x]y[/url]\xef\xbb\xbf"\r\n'
+    b"\r\n"
+    b"[installedFiles]\r\n"
+    b"1\\modid=8766\r\n"
+    b"1\\fileid=123456\r\n"
+    b"size=2\r\n"
+    b"\r\n"
+    b"[Plugins]\r\n"
+    b"Update Manager\\note=needs CET 2.0\r\n"
+)
+
+
+def write_meta(directory, body):
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, "meta.ini")
+    with open(path, "wb") as handle:
+        handle.write(body)
+    return path
+
+
+print("clear_ignored_version")
+root = tempfile.mkdtemp(prefix="umd-overrides-")
+try:
+    mod = os.path.join(root, "Some Mod")
+    path = write_meta(mod, REAL)
+    error = clear_ignored_version(mod)
+    with open(path, "rb") as handle:
+        after = handle.read()
+
+    check("returns no error", error is None, error or "")
+    check(
+        "only that one line changed",
+        after == REAL.replace(b"ignoredVersion=1.2.1.0\r\n", b"ignoredVersion=\r\n"),
+    )
+    check("CRLF preserved", after.count(b"\r\n") == REAL.count(b"\r\n"))
+    check("no LF-only lines introduced", not re.search(rb"[^\r]\n", after))
+    check("description blob intact", b"caf\xc3\xa9" in after and b"\xef\xbb\xbf" in after)
+    check("plugin note survives", b"Update Manager\\note=needs CET 2.0" in after)
+    check("no temp file left", not os.path.exists(path + ".umd-tmp"))
+
+    again = clear_ignored_version(mod)
+    with open(path, "rb") as handle:
+        check("idempotent", again is None and handle.read() == after)
+
+    plain = os.path.join(root, "Plain Mod")
+    plain_body = b"[General]\r\nmodid=1\r\nversion=1.0\r\n"
+    plain_path = write_meta(plain, plain_body)
+    check("absent key is not an error", clear_ignored_version(plain) is None)
+    with open(plain_path, "rb") as handle:
+        check("absent key leaves file untouched", handle.read() == plain_body)
+
+    lf = os.path.join(root, "LF Mod")
+    lf_path = write_meta(lf, b"[General]\nignoredVersion=2.0\nmodid=5\n")
+    clear_ignored_version(lf)
+    with open(lf_path, "rb") as handle:
+        check(
+            "LF file stays LF",
+            handle.read() == b"[General]\nignoredVersion=\nmodid=5\n",
+        )
+
+    other = os.path.join(root, "Other Section")
+    other_body = b"[General]\r\nmodid=1\r\n\r\n[Plugins]\r\nignoredVersion=9.9\r\n"
+    other_path = write_meta(other, other_body)
+    clear_ignored_version(other)
+    with open(other_path, "rb") as handle:
+        check("only [General] is touched", handle.read() == other_body)
+
+    check("missing folder is an error", clear_ignored_version("") is not None)
+    check(
+        "missing file is an error",
+        clear_ignored_version(os.path.join(root, "nope")) is not None,
+    )
+finally:
+    shutil.rmtree(root, ignore_errors=True)
+
+
+# -- is_ignored ------------------------------------------------------------
+
+print("is_ignored")
+check("ignored when versions match", is_ignored(FakeEntry("1.2.1.0", "1.2.1")))
+check("not ignored when newer arrived", not is_ignored(FakeEntry("1.2.1", "1.3.0")))
+check("not ignored with no flag", not is_ignored(FakeEntry("", "1.3.0")))
+check("forced beats the flag", not is_ignored(FakeEntry("1.2.1.0", "1.2.1", "1.2.1")))
+check(
+    "force is scoped to its own version",
+    is_ignored(FakeEntry("1.4.0", "1.4.0", "1.2.1")),
+    "a stale force must not swallow a later ignore",
+)
+check(
+    "force tolerates MO2's four-segment padding",
+    not is_ignored(FakeEntry("1.2.1.0", "1.2.1", "1.2.1.0")),
+)
+
+
+# -- the note --------------------------------------------------------------
+
+print("_note_age")
+check("silent with no note version", dialog._note_age(FakeEntry(latest="2.1")) == "")
+check(
+    "silent when nothing is known to be newer",
+    dialog._note_age(FakeEntry(note_version="2.0")) == "",
+)
+check(
+    "silent while the note still describes the latest",
+    dialog._note_age(FakeEntry(latest="2.0", note_version="2.0")) == "",
+)
+check(
+    "silent across MO2's four-segment padding",
+    dialog._note_age(FakeEntry(latest="2.0", note_version="2.0.0.0")) == "",
+)
+check(
+    "names the version once it has been overtaken",
+    dialog._note_age(FakeEntry(latest="2.1", note_version="2.0")) == " on 2.0",
+)
+
+print("_note_label")
+check("nothing without a note", dialog._note_label(FakeEntry()) == "")
+check(
+    "marks the user's own words",
+    dialog._note_label(FakeEntry(note="needs CET 2.0")) == "\u270e needs CET 2.0",
+)
+check(
+    "flattens a multi-line note onto the row",
+    dialog._note_label(FakeEntry(note="needs CET 2.0\n\n1.9 still works."))
+    == "\u270e needs CET 2.0 1.9 still works.",
+)
+long_note = "word " * 60
+labelled = dialog._note_label(FakeEntry(note=long_note))
+check(
+    "shortens a long note to keep the column narrow",
+    len(labelled) <= dialog._NOTE_LIMIT + 2 and labelled.endswith("\u2026"),
+    labelled,
+)
+check(
+    "dates a stale note on the row",
+    dialog._note_label(FakeEntry(note="needs CET", latest="2.1", note_version="2.0"))
+    == "\u270e on 2.0 needs CET",
+)
+
+print("_notes_cell")
+check("empty for a quiet row", dialog._notes_cell(FakeEntry()) == "")
+check(
+    "the scan's message alone",
+    dialog._notes_cell(FakeEntry(message="Ignored in MO2.")) == "Ignored in MO2.",
+)
+check(
+    "the user's note alone",
+    dialog._notes_cell(FakeEntry(note="needs CET")) == "\u270e needs CET",
+)
+check(
+    "the user's words lead, the scan's boilerplate follows",
+    dialog._notes_cell(FakeEntry(message="Ignored in MO2.", note="needs CET"))
+    == "\u270e needs CET   Ignored in MO2.",
+)
+
+print("_note_block")
+check("nothing without a note", dialog._note_block(FakeEntry()) == "")
+check(
+    "indented under its mod",
+    dialog._note_block(FakeEntry(note="needs CET 2.0"))
+    == "\n      \u270e needs CET 2.0",
+)
+check(
+    "keeps every line, unlike the row",
+    dialog._note_block(FakeEntry(note="needs CET 2.0\n1.9 still works."))
+    == "\n      \u270e needs CET 2.0\n        1.9 still works.",
+)
+check(
+    "dates a stale note in the dialog too",
+    dialog._note_block(FakeEntry(note="needs CET", latest="2.1", note_version="2.0"))
+    == "\n      \u270e on 2.0 needs CET",
+)
+
+print("_matches")
+noted = FakeEntry(name="Winds of Cydonia", note="needs CET 2.0", latest="2.1")
+check("finds a mod by its name", dialog._matches(noted, ["cydonia"]))
+check("finds a mod by what you wrote about it", dialog._matches(noted, ["cet"]))
+check("every word has to match", not dialog._matches(noted, ["cet", "starfield"]))
+check("word order does not matter", dialog._matches(noted, ["cet", "winds"]))
+check("versions are not searched", not dialog._matches(noted, ["2.1"]))
+check("nothing matches a missing row", not dialog._matches(None, ["cet"]))
+
+print()
+print("FAILED: " + ", ".join(FAILURES) if FAILURES else "all checks passed")
+sys.exit(1 if FAILURES else 0)
