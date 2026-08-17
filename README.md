@@ -59,6 +59,10 @@ Restart MO2. The tool appears under **Tools > Update Manager**.
 | **Not checked** | No result and no cached record for this mod | Rescan. If it persists, run a deep scan |
 | **Up to date** | Nothing newer in your file line | Nothing |
 
+Each category shows as a coloured dot beside the mod name and as the colour of its group heading. Mod names keep the theme's own text colour, so nothing fights the stylesheet for readability.
+
+Those category colours are not fixed values. MO2 applies themes as Qt stylesheets rather than palettes, so there is no "is this dark?" flag to read — but a widget's *effective* palette does pick up the stylesheet's colours once Qt polishes it. The plugin measures the list's real background and then solves each category's lightness until it clears a 4.5:1 contrast ratio against it. Hues stay fixed so a category stays recognisable; only lightness and saturation move. On an unusual mid-tone background it falls back to the most readable value that hue can manage.
+
 **Page updated, your file unchanged** is the group worth understanding. Say you installed the optional *Collision Mesh Preview* file from the *World Builder* page. That file has only ever been uploaded once, so there is genuinely no update *for it* — but the main World Builder file has moved from 1.0.8 to 1.0.81. MO2's own check flags this as an update (it compares page versions); strictly it is not one. The group exists so the fact is visible without being mixed in with real updates.
 
 ### Quick scan vs deep scan
@@ -149,6 +153,7 @@ Credentials are never printed, only their source and length.
 | `nexus.py` | Async Nexus v1 client on QtNetwork, with rate-limit tracking |
 | `scanner.py` | Reads MO2's modlist, maps game names to Nexus domains, resolves file lines |
 | `downloads.py` | Indexes MO2's downloads folder by `(mod id, file id)` |
+| `theme.py` | Category colours solved for contrast against the live theme |
 | `cache.py` | On-disk record of the last known state of each mod |
 | `credentials.py` | Reads MO2's Nexus credentials from the Windows Credential Manager |
 | `icon.svg` | Tools-menu icon |

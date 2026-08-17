@@ -9,7 +9,7 @@ from typing import Optional
 
 try:
     from PyQt5.QtCore import Qt, QUrl
-    from PyQt5.QtGui import QBrush, QColor, QDesktopServices, QFont, QIcon
+    from PyQt5.QtGui import QBrush, QDesktopServices, QFont, QIcon
     from PyQt5.QtWidgets import (
         QAbstractItemView,
         QCheckBox,
@@ -30,7 +30,7 @@ try:
     )
 except ImportError:
     from PyQt6.QtCore import Qt, QUrl
-    from PyQt6.QtGui import QBrush, QColor, QDesktopServices, QFont, QIcon
+    from PyQt6.QtGui import QBrush, QDesktopServices, QFont, QIcon
     from PyQt6.QtWidgets import (
         QAbstractItemView,
         QCheckBox,
@@ -58,6 +58,7 @@ from .cache import ScanCache
 from .credentials import resolve_auth
 from .nexus import NexusClient
 from .scanner import ModEntry, collect_mods
+from .theme import Theme
 from .updater import UpdateScan
 
 _ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.svg")
@@ -65,16 +66,18 @@ _ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.svg"
 _ENTRY_ROLE = Qt.ItemDataRole.UserRole
 
 _GROUPS = (
-    (ModEntry.DOWNLOADED, "Downloaded, waiting to be installed", QColor(41, 182, 246)),
-    (ModEntry.UPDATE, "Updates available", QColor(76, 175, 80)),
-    (ModEntry.DELISTED, "No longer on Nexus", QColor(229, 57, 53)),
-    (ModEntry.HIDDEN, "Hidden or unavailable", QColor(251, 140, 0)),
-    (ModEntry.PAGE_CHANGED, "Page updated, your file unchanged", QColor(149, 117, 205)),
-    (ModEntry.IGNORED, "Ignored in MO2", QColor(144, 164, 174)),
-    (ModEntry.ERROR, "Could not be checked", QColor(158, 158, 158)),
-    (ModEntry.UNCHECKED, "Not checked", QColor(158, 158, 158)),
-    (ModEntry.CURRENT, "Up to date", QColor(120, 144, 156)),
+    (ModEntry.DOWNLOADED, "Downloaded, waiting to be installed"),
+    (ModEntry.UPDATE, "Updates available"),
+    (ModEntry.DELISTED, "No longer on Nexus"),
+    (ModEntry.HIDDEN, "Hidden or unavailable"),
+    (ModEntry.PAGE_CHANGED, "Page updated, your file unchanged"),
+    (ModEntry.IGNORED, "Ignored in MO2"),
+    (ModEntry.ERROR, "Could not be checked"),
+    (ModEntry.UNCHECKED, "Not checked"),
+    (ModEntry.CURRENT, "Up to date"),
 )
+
+_GROUP_TITLES = dict(_GROUPS)
 
 # Groups whose rows get a checkbox, and what the checked rows are for.
 _DOWNLOADABLE = (ModEntry.UPDATE,)
@@ -84,8 +87,8 @@ _CHECKABLE = _DOWNLOADABLE + _INSTALLABLE
 # Groups that start collapsed: nothing here needs the user to act.
 _COLLAPSED = (ModEntry.CURRENT, ModEntry.PAGE_CHANGED, ModEntry.IGNORED)
 
-# Groups worth colouring the mod name for.
-_HIGHLIGHTED = (
+# Groups whose rows carry a coloured mark; the rest read as ordinary text.
+_MARKED = (
     ModEntry.DOWNLOADED,
     ModEntry.UPDATE,
     ModEntry.DELISTED,
@@ -142,6 +145,7 @@ class UpdateManagerDialog(QDialog):
         self._skipped_count = 0
         self._account = ""
         self._downloads: dict = {}
+        self._theme: Optional[Theme] = None
 
         self.setWindowTitle(f"Update Manager v{VERSION}")
         if os.path.exists(_ICON_PATH):
@@ -417,6 +421,16 @@ class UpdateManagerDialog(QDialog):
 
     # -- tree --------------------------------------------------------------
 
+    def _get_theme(self) -> Theme:
+        """Category colours resolved against the tree's real palette.
+
+        Built on first use rather than in __init__: MO2's stylesheet only
+        reaches a widget's effective palette once Qt has polished it.
+        """
+        if self._theme is None:
+            self._theme = Theme(self._tree)
+        return self._theme
+
     def _populate(self, entries: list) -> None:
         # Building the tree emits itemChanged for every cell; on a large modlist
         # that would re-walk the whole tree thousands of times.
@@ -429,10 +443,13 @@ class UpdateManagerDialog(QDialog):
 
     def _populate_tree(self, entries: list) -> None:
         self._tree.clear()
+
+        theme = self._get_theme()
         bold = QFont()
         bold.setBold(True)
+        muted = QBrush(theme.muted())
 
-        for status, title, colour in _GROUPS:
+        for status, title in _GROUPS:
             members = [e for e in entries if e.status == status]
             if not members:
                 continue
@@ -441,7 +458,7 @@ class UpdateManagerDialog(QDialog):
                 self._tree, [f"{title} ({len(members)})", "", "", "", ""]
             )
             group.setFont(0, bold)
-            group.setForeground(0, QBrush(colour))
+            group.setForeground(0, QBrush(theme.colour(status)))
             group.setFlags(Qt.ItemFlag.ItemIsEnabled)
             group.setExpanded(status not in _COLLAPSED)
 
@@ -457,8 +474,12 @@ class UpdateManagerDialog(QDialog):
                     ],
                 )
                 item.setData(0, _ENTRY_ROLE, entry)
-                if status in _HIGHLIGHTED:
-                    item.setForeground(0, QBrush(colour))
+                # The name keeps the theme's own text colour so it stays
+                # readable; the category shows as a mark beside it.
+                if status in _MARKED:
+                    item.setIcon(0, theme.dot(status))
+                for column in (1, 4):
+                    item.setForeground(column, muted)
                 if status in _CHECKABLE:
                     item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                     item.setCheckState(0, Qt.CheckState.Unchecked)
@@ -564,19 +585,27 @@ class UpdateManagerDialog(QDialog):
             ("Installed version", entry.installed_version or "-"),
             ("Latest version", entry.latest_version or "-"),
             ("Last updated", _timestamp(entry.latest_file_update) or "-"),
-            ("Status", entry.status),
+            ("Status", _GROUP_TITLES.get(entry.status, entry.status)),
         ]
         if entry.ignored_version:
             rows.append(("Ignored version", entry.ignored_version))
         if entry.download is not None:
             rows.append(("Already downloaded", entry.download.file_name))
+
+        theme = self._get_theme()
+        label = theme.muted(0.35).name()
+        accent = theme.colour(entry.status).name()
         body = "".join(
-            f"<tr><td style='padding-right:12px'><b>{html.escape(k)}</b></td>"
+            f"<tr><td style='padding-right:12px;color:{label}'>{html.escape(k)}</td>"
             f"<td>{html.escape(v)}</td></tr>"
             for k, v in rows
         )
         link = html.escape(entry.page_url)
-        note = f"<p>{html.escape(entry.message)}</p>" if entry.message else ""
+        note = (
+            f"<p style='color:{accent}'>{html.escape(entry.message)}</p>"
+            if entry.message
+            else ""
+        )
         self._details_view.setHtml(
             f"<table>{body}</table>{note}<p><a href='{link}'>{link}</a></p>"
         )
@@ -590,12 +619,13 @@ class UpdateManagerDialog(QDialog):
             return
 
         installed = (entry.installed_version or "").strip().lstrip("vV")
+        accent = self._get_theme().colour(ModEntry.UPDATE).name()
         blocks = []
         for version in _sorted_versions(changelog.keys()):
             lines = changelog.get(version) or []
             newer = _is_after(installed, version)
             heading = html.escape(version or "Notes")
-            marker = " <span style='color:#4caf50'>(new)</span>" if newer else ""
+            marker = f" <span style='color:{accent}'>(new)</span>" if newer else ""
             items = "".join(f"<li>{html.escape(str(line))}</li>" for line in lines)
             blocks.append(f"<h3>{heading}{marker}</h3><ul>{items}</ul>")
 
