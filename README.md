@@ -59,13 +59,21 @@ Restart MO2. The tool appears under **Tools > Update Manager**.
 | **Not checked** | No result and no cached record for this mod | Rescan. If it persists, run a deep scan |
 | **Up to date** | Nothing newer in your file line | Nothing |
 
+Columns size themselves to their contents rather than stretching to fill, so long mod names are never squeezed or elided; the list scrolls sideways instead. Columns stay draggable and reorderable, and refit when a collapsed group is opened.
+
 Each category shows as a coloured dot beside the mod name and as the colour of its group heading. Mod names keep the theme's own text colour, so nothing fights the stylesheet for readability.
 
 Those category colours are not fixed values. MO2 applies themes as Qt stylesheets rather than palettes, so there is no "is this dark?" flag to read — but a widget's *effective* palette does pick up the stylesheet's colours once Qt polishes it. The plugin measures the list's real background and then solves each category's lightness until it clears a 4.5:1 contrast ratio against it. Hues stay fixed so a category stays recognisable; only lightness and saturation move. On an unusual mid-tone background it falls back to the most readable value that hue can manage.
 
 **Page updated, your file unchanged** is the group worth understanding. Say you installed the optional *Collision Mesh Preview* file from the *World Builder* page. That file has only ever been uploaded once, so there is genuinely no update *for it* — but the main World Builder file has moved from 1.0.8 to 1.0.81. MO2's own check flags this as an update (it compares page versions); strictly it is not one. The group exists so the fact is visible without being mixed in with real updates.
 
-It is deliberately hard to get into. Two conditions must both hold: the file you installed is **not** the page's primary upload (if it is, the page version tracks it and can never be ahead), and the page version parses as genuinely newer than your file's version. Nexus pages gain uploads constantly — translations, patches, optional extras — and none of that means your file is stale.
+It is deliberately hard to get into. Three conditions must all hold:
+
+1. The file you installed is **not** the page's primary upload. If it is, the page version tracks it and can never be ahead.
+2. Both your file's version and the page's version are **plain dotted numbers**. Anything else — `1.0.0joker`, `1.0.1b`, a date, a build string — means the author numbers that file on its own scheme, and comparing it against the page version is meaningless.
+3. The page version is genuinely higher.
+
+Condition 2 is stricter than `mobase.VersionInfo`, whose regex is a prefix match (`versioninfo.cpp:27`) and happily reads `1.0.0joker` as a perfectly good `1.0.0`. That leniency is right for "is there a newer file in this line?" and wrong here, where it manufactures comparisons between unrelated numbering schemes. On a 77-mod test list, the three conditions together take this group from 11 mods to 2 — and both survivors are real optional add-ons sitting several versions behind their page.
 
 ### Quick scan vs deep scan
 

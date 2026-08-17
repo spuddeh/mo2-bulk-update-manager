@@ -336,27 +336,40 @@ def _normalize(version: str) -> str:
     return ".".join(parts)
 
 
-def page_ahead_of(file_version: str, page_version: str) -> bool:
-    """True when the page's own version has run past a file's version.
+# Only a plain dotted number counts here. Anything else -- "1.0.0joker",
+# "1.0.1b", a date, a build string -- means the author is numbering that file
+# on its own scheme, and comparing it with the page version is meaningless.
+_PLAIN_VERSION = re.compile(r"^\d+(?:\.\d+)*$")
 
-    Deliberately strict: both sides must parse as real versions. Nexus version
-    strings are free text, and guessing at "1.0.1b" versus "1.0.3" produces
-    noise rather than information.
+
+def _plain_version(text: str) -> Optional[tuple]:
+    """Parse a strictly numeric version, or None if it is anything else.
+
+    Deliberately stricter than ``mobase.VersionInfo``, whose regex is a prefix
+    match (``versioninfo.cpp:27``) and so reads "1.0.0joker" as a perfectly
+    good 1.0.0. That leniency is right when asking "is there a newer file in
+    this line?" and wrong when asking "has the page overtaken my file?", where
+    it manufactures comparisons between unrelated numbering schemes.
     """
-    if not file_version or not page_version:
-        return False
-    if _normalize(file_version) == _normalize(page_version):
+    cleaned = (text or "").strip()
+    if cleaned[:1].lower() == "v":
+        cleaned = cleaned[1:].strip()
+    if not cleaned or not _PLAIN_VERSION.match(cleaned):
+        return None
+    return tuple(int(part) for part in cleaned.split("."))
+
+
+def page_ahead_of(file_version: str, page_version: str) -> bool:
+    """True when the page's own version has run past a file's version."""
+    mine = _plain_version(file_version)
+    theirs = _plain_version(page_version)
+    if mine is None or theirs is None:
         return False
 
-    try:
-        current = mobase.VersionInfo(file_version)
-        newest = mobase.VersionInfo(page_version)
-    except Exception:
-        return False
-
-    if not current.isValid() or not newest.isValid():
-        return False
-    return newest > current
+    width = max(len(mine), len(theirs))
+    mine += (0,) * (width - len(mine))
+    theirs += (0,) * (width - len(theirs))
+    return theirs > mine
 
 
 def is_primary_file(info: dict) -> bool:

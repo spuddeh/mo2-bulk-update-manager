@@ -110,6 +110,29 @@ _CATEGORY_RANK = {
 _SUPERSEDED = ("OLD_VERSION", "ARCHIVED")
 
 
+def _make_scrollable(tree) -> None:
+    """Let a tree's columns size to their content and scroll sideways.
+
+    Stretching the first column to fill the viewport means a long mod name is
+    squeezed or elided and there is never anything to scroll to. Sizing every
+    column to its content instead, with no stretch on the last one, lets the
+    row take the width it actually needs.
+    """
+    header = tree.header()
+    header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+    header.setStretchLastSection(False)
+    header.setSectionsMovable(True)
+    tree.setTextElideMode(Qt.TextElideMode.ElideNone)
+    tree.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+    tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+
+def _autofit(tree) -> None:
+    """Size every column to its widest cell, header included."""
+    for column in range(tree.columnCount()):
+        tree.resizeColumnToContents(column)
+
+
 def _timestamp(value) -> str:
     try:
         value = int(value)
@@ -178,10 +201,13 @@ class UpdateManagerDialog(QDialog):
         self._tree.setRootIsDecorated(True)
         self._tree.setAlternatingRowColors(True)
         self._tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self._tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        _make_scrollable(self._tree)
         self._tree.itemSelectionChanged.connect(self._on_selection_changed)
         self._tree.itemDoubleClicked.connect(lambda *_: self._open_page())
         self._tree.itemChanged.connect(self._on_item_changed)
+        # Column widths only measure visible rows, so a group that starts
+        # collapsed needs a refit once its contents appear.
+        self._tree.itemExpanded.connect(lambda *_: _autofit(self._tree))
         splitter.addWidget(self._tree)
 
         self._tabs = QTabWidget()
@@ -198,7 +224,7 @@ class UpdateManagerDialog(QDialog):
         self._files_tree.setHeaderLabels(
             ["File", "Version", "Category", "Size", "Uploaded"]
         )
-        self._files_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        _make_scrollable(self._files_tree)
         self._files_tree.itemSelectionChanged.connect(self._on_file_selected)
         files_layout.addWidget(self._files_tree, 3)
         self._file_desc = QTextBrowser()
@@ -484,8 +510,7 @@ class UpdateManagerDialog(QDialog):
                     item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                     item.setCheckState(0, Qt.CheckState.Unchecked)
 
-        for column in (1, 2, 3):
-            self._tree.resizeColumnToContents(column)
+        _autofit(self._tree)
 
     def _on_item_changed(self, *_):
         self._download_btn.setEnabled(bool(self._checked_entries(_DOWNLOADABLE)))
@@ -663,8 +688,7 @@ class UpdateManagerDialog(QDialog):
                 item.setText(0, "✓ " + item.text(0))
                 self._files_tree.setCurrentItem(item)
 
-        for column in range(1, 5):
-            self._files_tree.resizeColumnToContents(column)
+        _autofit(self._files_tree)
 
     def _on_file_selected(self) -> None:
         item = self._files_tree.currentItem()
