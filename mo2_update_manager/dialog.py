@@ -723,7 +723,8 @@ class UpdateManagerDialog(QDialog):
         if answer != QMessageBox.StandardButton.Yes:
             return
 
-        installed, failed = 0, []
+        hide_after = self._hide_downloads_after_install()
+        installed, hidden, failed = 0, 0, []
         for entry in targets:
             try:
                 result = self._organizer.installMod(
@@ -734,8 +735,15 @@ class UpdateManagerDialog(QDialog):
                 continue
             if result is None:
                 failed.append(f"{entry.display_name}: installation was cancelled.")
-            else:
-                installed += 1
+                continue
+
+            installed += 1
+            if hide_after:
+                error = downloads_index.hide(entry.download)
+                if error:
+                    failed.append(f"{entry.display_name}: installed, but {error}")
+                else:
+                    hidden += 1
 
         if failed:
             QMessageBox.warning(
@@ -744,10 +752,39 @@ class UpdateManagerDialog(QDialog):
                 f"Installed {installed}.\n\n" + "\n".join(failed),
             )
         else:
-            self._status_label.setText(f"Installed {installed} archive(s).")
+            note = f"Installed {installed} archive(s)."
+            if hidden:
+                note += f" Hid {hidden} download(s), as MO2's settings ask."
+            self._status_label.setText(note)
 
         if installed:
             self._start_scan(deep=False)
+
+    def _hide_downloads_after_install(self) -> bool:
+        """MO2's own 'hide downloads after installation' preference.
+
+        MO2 applies this itself only on the Downloads-tab install path
+        (``organizercore.cpp:911``). The archive install that plugins get goes
+        through ``installArchive``, which marks the download installed but
+        never hides it -- so read the setting and do it here.
+        """
+        path = os.path.join(self._organizer.basePath(), "ModOrganizer.ini")
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                section = ""
+                for line in handle:
+                    stripped = line.strip()
+                    if stripped.startswith("["):
+                        section = stripped.lower()
+                        continue
+                    if section != "[settings]" or "=" not in stripped:
+                        continue
+                    key, _, value = stripped.partition("=")
+                    if key.strip().lower() == "autohide_downloads":
+                        return value.strip().strip('"').lower() == "true"
+        except OSError:
+            return False
+        return False
 
     def _on_download(self) -> None:
         targets = self._checked_entries(_DOWNLOADABLE)

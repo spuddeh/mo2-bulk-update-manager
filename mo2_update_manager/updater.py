@@ -31,7 +31,14 @@ except ImportError:
 
 from .downloads import READY as DOWNLOAD_READY
 from .downloads import find as find_download
-from .scanner import ModEntry, is_ignored, is_newer, resolve_file_line
+from .scanner import (
+    ModEntry,
+    is_ignored,
+    is_newer,
+    is_primary_file,
+    page_ahead_of,
+    resolve_file_line,
+)
 
 # Nexus only accepts these three windows.
 _PERIODS = (("1d", 1), ("1w", 7), ("1m", 28))
@@ -370,7 +377,7 @@ class UpdateScan(QObject):
                     # re-upload or a silent hotfix. Still worth surfacing.
                     else "Newer upload with the same version number."
                 )
-            elif self._page_moved_on(installed, files):
+            elif self._page_moved_on(installed, page):
                 # This file line is current, but something else on the page is
                 # not -- typically an optional add-on for a main file that has
                 # since been updated. MO2 reports this as an update; it is not
@@ -397,13 +404,26 @@ class UpdateScan(QObject):
             entry.message = ""
 
     @staticmethod
-    def _page_moved_on(installed: dict, files: list) -> bool:
-        """True when a *different* file line on the page has a newer upload."""
-        installed_at = int(installed.get("uploaded_timestamp") or 0)
-        if not installed_at:
+    def _page_moved_on(installed: dict, page: dict) -> bool:
+        """True when the page's own version has run past the installed file.
+
+        Deliberately narrow. A Nexus page gains uploads constantly --
+        translations, optional extras, patches -- and none of those mean the
+        file you have is stale. An earlier version of this checked for *any*
+        newer upload and flagged eleven mods that were perfectly current,
+        because someone had added a French translation.
+
+        Two conditions, both required:
+
+        * The installed file is not the page's primary upload. If it is, the
+          page version tracks it by definition and can never be ahead.
+        * The page version genuinely parses as newer than the file's version.
+        """
+        if is_primary_file(installed):
             return False
-        newest = max(int(f.get("uploaded_timestamp") or 0) for f in files)
-        return newest > installed_at
+        return page_ahead_of(
+            str(installed.get("version") or ""), str(page.get("version") or "")
+        )
 
     def _note_download(self, entry: ModEntry) -> None:
         """Flag updates whose file is already sitting in MO2's downloads."""

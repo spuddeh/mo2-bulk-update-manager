@@ -65,6 +65,8 @@ Those category colours are not fixed values. MO2 applies themes as Qt stylesheet
 
 **Page updated, your file unchanged** is the group worth understanding. Say you installed the optional *Collision Mesh Preview* file from the *World Builder* page. That file has only ever been uploaded once, so there is genuinely no update *for it* — but the main World Builder file has moved from 1.0.8 to 1.0.81. MO2's own check flags this as an update (it compares page versions); strictly it is not one. The group exists so the fact is visible without being mixed in with real updates.
 
+It is deliberately hard to get into. Two conditions must both hold: the file you installed is **not** the page's primary upload (if it is, the page version tracks it and can never be ahead), and the page version parses as genuinely newer than your file's version. Nexus pages gain uploads constantly — translations, patches, optional extras — and none of that means your file is stale.
+
 ### Quick scan vs deep scan
 
 **Rescan** (quick) asks Nexus what changed in each game since your last scan, checks only those mods, and re-verifies a rotating slice of the oldest cached results so delistings still surface over time.
@@ -127,6 +129,7 @@ Nothing is written to the credential store, and the token is never logged or dis
 - **Each queried page costs two requests** — the page itself for availability, plus its file list. The file list is cached, so a page that hasn't changed costs nothing on the next scan.
 - **The cache is shared** across MO2 instances on the same install — it lives in `plugins/data/update_manager_cache.json`. Delete that file to force a clean baseline.
 - **Rate limits** are read from Nexus' own `x-rl-*` response headers and shown in the window. The scan stops early rather than running you out of requests.
+- **"Hide downloads after installation" is honoured.** MO2 applies that setting itself only on its own Downloads-tab install path (`organizercore.cpp:911`); the archive install that plugins get marks the download installed but never hides it. So when the setting is on, the plugin writes the same `removed=true` flag MO2 writes (`downloadmanager.cpp:910`), touching that one line and nothing else in the meta file.
 
 ## Development
 

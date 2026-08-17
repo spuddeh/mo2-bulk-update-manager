@@ -336,6 +336,36 @@ def _normalize(version: str) -> str:
     return ".".join(parts)
 
 
+def page_ahead_of(file_version: str, page_version: str) -> bool:
+    """True when the page's own version has run past a file's version.
+
+    Deliberately strict: both sides must parse as real versions. Nexus version
+    strings are free text, and guessing at "1.0.1b" versus "1.0.3" produces
+    noise rather than information.
+    """
+    if not file_version or not page_version:
+        return False
+    if _normalize(file_version) == _normalize(page_version):
+        return False
+
+    try:
+        current = mobase.VersionInfo(file_version)
+        newest = mobase.VersionInfo(page_version)
+    except Exception:
+        return False
+
+    if not current.isValid() or not newest.isValid():
+        return False
+    return newest > current
+
+
+def is_primary_file(info: dict) -> bool:
+    """True for the upload a page's own version number tracks."""
+    if info.get("is_primary"):
+        return True
+    return str(info.get("category_name") or "").upper() == "MAIN"
+
+
 def is_ignored(entry: ModEntry) -> bool:
     """True when MO2 was told to ignore exactly this version.
 

@@ -21,13 +21,14 @@ INCOMPLETE = "incomplete"  # download was interrupted
 
 
 class DownloadInfo:
-    __slots__ = ("mod_id", "file_id", "file_name", "path", "version", "state")
+    __slots__ = ("mod_id", "file_id", "file_name", "path", "meta_path", "version", "state")
 
-    def __init__(self, mod_id, file_id, file_name, path, version, state):
+    def __init__(self, mod_id, file_id, file_name, path, meta_path, version, state):
         self.mod_id = mod_id
         self.file_id = file_id
         self.file_name = file_name
         self.path = path
+        self.meta_path = meta_path
         self.version = version
         self.state = state
 
@@ -116,11 +117,80 @@ def scan(downloads_path: str) -> dict[tuple[int, int], DownloadInfo]:
             file_id,
             archive_name,
             archive_path,
+            meta_path,
             values.get("version") or "",
             state,
         )
 
     return index
+
+
+def hide(info: DownloadInfo) -> Optional[str]:
+    """Hide a download from MO2's Downloads tab. Returns an error, or None.
+
+    MO2 hides a download by writing ``removed=true`` into its meta file and
+    nothing else (``downloadmanager.cpp:910``), so that is all this does. It is
+    needed because MO2 only applies the "hide downloads after installation"
+    setting on its own Downloads-tab install path
+    (``organizercore.cpp:911``); the archive-path install that plugins get
+    marks the download installed but never hides it.
+
+    Rewrites one line and leaves the rest of the file byte-for-byte alone --
+    these metas carry a large binary ``userData`` blob that is not worth
+    round-tripping through an INI parser.
+    """
+    try:
+        # newline="" so Windows line endings survive the round trip; without it
+        # every line in the file changes, not just the one we mean to touch.
+        with open(
+            info.meta_path, "r", encoding="utf-8", errors="surrogateescape", newline=""
+        ) as handle:
+            lines = handle.read().splitlines(keepends=True)
+    except OSError as exc:
+        return f"could not read {os.path.basename(info.meta_path)}: {exc}"
+
+    newline = "\n"
+    for line in lines:
+        if line.endswith("\r\n"):
+            newline = "\r\n"
+            break
+
+    out, section, written, seen_general = [], "", False, False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("["):
+            # Leaving [General] without having found the key: add it here.
+            if section == "[general]" and not written:
+                out.append(f"removed=true{newline}")
+                written = True
+            section = stripped.lower()
+            seen_general = seen_general or section == "[general]"
+        elif section == "[general]" and stripped.lower().startswith("removed="):
+            out.append(f"removed=true{newline}")
+            written = True
+            continue
+        out.append(line)
+
+    if not written:
+        if out and not out[-1].endswith(("\n", "\r")):
+            out.append(newline)
+        if not seen_general:
+            out.append(f"[General]{newline}")
+        out.append(f"removed=true{newline}")
+
+    temp = info.meta_path + ".umd-tmp"
+    try:
+        with open(temp, "w", encoding="utf-8", errors="surrogateescape", newline="") as handle:
+            handle.writelines(out)
+        os.replace(temp, info.meta_path)
+    except OSError as exc:
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+        return f"could not update {os.path.basename(info.meta_path)}: {exc}"
+
+    return None
 
 
 def find(index: dict, mod_id: int, file_id: Optional[int]) -> Optional[DownloadInfo]:
