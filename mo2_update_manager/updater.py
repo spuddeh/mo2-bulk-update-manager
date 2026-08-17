@@ -529,7 +529,13 @@ class UpdateScan(QObject):
         if not versions:
             entry.status = ModEntry.UNCHECKED
             entry.message = (
-                "Could not work out which upload this came from."
+                # Always a metadata problem rather than a Nexus one: MO2 has no
+                # record of which file this mod came from, and its name matches
+                # none of the downloads on the page. Reinstalling from a fresh
+                # download fixes it permanently, because MO2 writes the file id.
+                "MO2 has no record of which file this came from, and the page has "
+                "several downloads that could match. Reinstall it from Nexus to "
+                "pin it down."
                 if not entry.chain_id
                 else "No version information for this mod's update chain."
             )

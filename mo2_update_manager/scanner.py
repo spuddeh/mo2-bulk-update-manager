@@ -643,14 +643,25 @@ def choose_chain(entry: ModEntry, chains: list) -> Optional[dict]:
     if len(chains) == 1:
         return chains[0]
 
-    archive = _squash(entry.installation_file)
-    if archive:
+    # The archive name is the best evidence, but it is not always there and is
+    # not always right: one mod on a real profile had no `installationFile` at
+    # all, and another pointed at a different mod's archive entirely. The mod's
+    # own name and the Nexus page name are worth trying too.
+    haystacks = [
+        _squash(text)
+        for text in (entry.installation_file, entry.display_name, entry.nexus_name)
+        if text
+    ]
+    if haystacks:
         hits = [
             c
             for c in chains
-            if _squash(str(c.get("name") or "")) and _squash(str(c.get("name") or "")) in archive
+            if _squash(str(c.get("name") or ""))
+            and any(_squash(str(c.get("name") or "")) in h for h in haystacks)
         ]
         if hits:
+            # Longest wins, so "Ellie - A Female Preset SAVE FILE" beats
+            # "Ellie - A Female Preset" when the name really does say SAVE FILE.
             return max(hits, key=lambda c: len(_squash(str(c.get("name") or ""))))
 
     active = [c for c in chains if c.get("is_active")]
