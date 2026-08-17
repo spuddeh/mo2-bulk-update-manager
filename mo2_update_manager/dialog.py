@@ -577,7 +577,6 @@ class UpdateManagerDialog(QDialog):
             (counts.get(ModEntry.HIDDEN, 0), "hidden"),
             (counts.get(ModEntry.IGNORED, 0), "ignored"),
             (counts.get(ModEntry.CURRENT, 0), "up to date"),
-            (sum(1 for e in entries if e.page_note), "on a page that has moved on"),
         ]
         summary = ", ".join(f"{n} {label}" for n, label in parts if n) + "."
         if self._skipped_count:
@@ -809,10 +808,6 @@ class UpdateManagerDialog(QDialog):
                 # readable; the category shows as a mark beside it.
                 if status in _MARKED:
                     item.setIcon(0, theme.dot(status))
-                elif entry.page_note:
-                    # Up to date, but the page has moved past this file. Marked
-                    # so it can be spotted inside a long up-to-date group.
-                    item.setIcon(0, theme.dot(ModEntry.PAGE_CHANGED))
                 for column in (1, 4):
                     item.setForeground(column, muted)
                 if status in _CHECKABLE:
@@ -1010,9 +1005,6 @@ class UpdateManagerDialog(QDialog):
             for item in self._update_items(statuses)
             if item.checkState(0) == Qt.CheckState.Checked
         ]
-
-    def _has_checked(self) -> bool:
-        return bool(self._checked_entries())
 
     def _current_entry(self) -> Optional[ModEntry]:
         item = self._tree.currentItem()
@@ -1324,8 +1316,6 @@ class UpdateManagerDialog(QDialog):
             ("Last updated", _timestamp(entry.latest_file_update) or "-"),
             ("Status", _GROUP_TITLES.get(entry.status, entry.status)),
         ]
-        if entry.page_note:
-            rows.append(("Page version", entry.page_note))
         if entry.ignored_version:
             rows.append(("Ignored version", entry.ignored_version))
         if entry.forced_version:
@@ -1337,9 +1327,7 @@ class UpdateManagerDialog(QDialog):
 
         theme = self._get_theme()
         label = theme.muted(0.35).name()
-        accent = theme.colour(
-            ModEntry.PAGE_CHANGED if entry.page_note else entry.status
-        ).name()
+        accent = theme.colour(entry.status).name()
         body = "".join(
             f"<tr><td style='padding-right:12px;color:{label}'>{html.escape(k)}</td>"
             # A note is free text and can be several lines; everything else here

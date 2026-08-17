@@ -42,10 +42,6 @@ _VERSION_FIELDS = (
     "uploaded_at",
 )
 
-# Kept from each v1 file record, for the Files tab only -- v3 does not carry
-# size or description, and that pane is fetched lazily anyway.
-_FILE_FIELDS = ("file_id", "name", "version", "uploaded_timestamp", "category_name")
-
 
 class ScanCache:
     def __init__(self, directory: str):
@@ -156,25 +152,6 @@ class ScanCache:
         )
         self._dirty = True
 
-    def put_files(self, domain: str, mod_id: int, files: list) -> None:
-        """Remember the page's uploads so a quiet page needs no second request."""
-        trimmed = [
-            {field: info.get(field) for field in _FILE_FIELDS} for info in (files or [])
-        ]
-        record = self._mods.setdefault(self._key(domain, mod_id), {})
-        record["files"] = trimmed
-        self._dirty = True
-
-    def get_files(self, domain: str, mod_id: int) -> Optional[list]:
-        record = self.get(domain, mod_id)
-        return record.get("files") if record else None
-
-    def age_days(self, domain: str, mod_id: int) -> float:
-        record = self.get(domain, mod_id)
-        if not record:
-            return float("inf")
-        return max(0.0, (time.time() - record.get("checked", 0)) / 86400.0)
-
     # -- v3: update chains -------------------------------------------------
 
     def game_id(self, domain: str) -> Optional[int]:
@@ -253,15 +230,9 @@ class ScanCache:
 
     # -- per-game bookkeeping ----------------------------------------------
 
-    def last_full_scan(self, domain: str) -> int:
-        return int((self._games.get(domain) or {}).get("last_full", 0))
-
     def last_scan(self, domain: str) -> int:
         return int((self._games.get(domain) or {}).get("last_scan", 0))
 
-    def mark_scan(self, domain: str, full: bool) -> None:
-        record = self._games.setdefault(domain, {})
-        record["last_scan"] = int(time.time())
-        if full:
-            record["last_full"] = int(time.time())
+    def mark_scan(self, domain: str) -> None:
+        self._games.setdefault(domain, {})["last_scan"] = int(time.time())
         self._dirty = True

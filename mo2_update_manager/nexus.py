@@ -163,10 +163,6 @@ class NexusClient(QObject):
     def pending(self) -> int:
         return len(self._queue) + self._active
 
-    def reset_progress(self) -> None:
-        self._issued = 0
-        self._completed = 0
-
     # -- endpoints ---------------------------------------------------------
 
     def validate(self, callback: Callable[[Response], None]) -> None:
@@ -201,13 +197,6 @@ class NexusClient(QObject):
             f"{API_BASE}/games/{domain}/mods/updated.json?period={period}",
             callback,
             ("updated", domain, period),
-        )
-
-    def mod_info(self, domain: str, mod_id: int, callback) -> None:
-        self._enqueue(
-            f"{API_BASE}/games/{domain}/mods/{mod_id}.json",
-            callback,
-            ("mod", domain, mod_id),
         )
 
     def mod_files(self, domain: str, mod_id: int, callback) -> None:

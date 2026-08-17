@@ -28,7 +28,6 @@ _HUES = {
     "update": 134.0,  # green: ready to download
     "delisted": 2.0,  # red: gone
     "hidden": 32.0,  # amber: temporarily unavailable
-    "page_changed": 276.0,  # violet: informational
 }
 
 # Categories drawn from the theme's text colour, with how far to fade them.

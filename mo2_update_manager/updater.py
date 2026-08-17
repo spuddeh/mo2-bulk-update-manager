@@ -226,7 +226,7 @@ class UpdateScan(QObject):
         if self._deep:
             for domain in self._domains:
                 self._changed[domain] = None  # None means "everything"
-                self._cache.mark_scan(domain, full=True)
+                self._cache.mark_scan(domain)
             self._begin_status()
             return
 
@@ -235,7 +235,7 @@ class UpdateScan(QObject):
             period = self._period_for(domain)
             if period is None:
                 self._changed[domain] = None
-                self._cache.mark_scan(domain, full=True)
+                self._cache.mark_scan(domain)
                 self._notes.append(
                     f"{domain}: last check was too long ago for a quick lookup, "
                     "so every mod was queried."
@@ -262,7 +262,7 @@ class UpdateScan(QObject):
             self._changed[domain] = {
                 int(r["mod_id"]) for r in rows if r.get("mod_id")
             }
-            self._cache.mark_scan(domain, full=False)
+            self._cache.mark_scan(domain)
         else:
             if response.unauthorized:
                 self.failed.emit(response.error)

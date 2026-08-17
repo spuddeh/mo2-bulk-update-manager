@@ -11,7 +11,7 @@ MO2 can tell you a mod has an update, but on a large modlist you have to force t
 ## What it does
 
 - **One request per game, not one per mod.** The scan uses Nexus' `mods/updated` feed, which reports every mod in a game changed in the last day/week/month in a single call. Results are cached on disk, so a routine check on a 500-mod list costs a handful of requests instead of 500.
-- **Compares file lines, not page versions.** See [Multi-file mod pages](#multi-file-mod-pages) — this is why it catches updates MO2's own check misses.
+- **Compares update chains, not page versions.** See [Multi-file mod pages](#multi-file-mod-pages) — this is why it catches updates MO2's own check misses.
 - **Flags delisted mods.** A mod page that returns 404, or reports `available: false` / a hidden status, is called out separately from ordinary updates.
 - **Knows what you already downloaded.** If the newer archive is sitting in MO2's downloads folder, the mod moves to *Downloaded, waiting to be installed* and the button becomes **Install selected** — no wasted second download.
 - **Respects MO2's ignored updates — and lets you overrule them.** A version you dismissed with MO2's *Ignore update* goes to a collapsed *Ignored* group instead of nagging, and a version newer than the one you ignored comes back. Right-click a row to take the update anyway, or to clear MO2's flag outright. See [Overriding MO2's ignore flag](#overriding-mo2s-ignore-flag).
@@ -59,7 +59,7 @@ Restart MO2. The tool appears under **Tools > Update Manager**.
 | **Ignored in MO2** | You used MO2's *Ignore update* on exactly this version | Nothing — or right-click to take it anyway, or to note why you didn't |
 | **Could not be checked** | The request failed — network, rate limit, or a Nexus error | Rescan later; the reason is in the Notes column |
 | **Not checked** | No result and no cached record for this mod | Rescan. If it persists, run a deep scan |
-| **Up to date** | Nothing newer in your file line | Nothing |
+| **Up to date** | Nothing newer in your update chain | Nothing |
 
 Columns size themselves to their contents rather than stretching to fill, so long mod names are never squeezed or elided; the list scrolls sideways instead. Columns stay draggable and reorderable, and refit when a collapsed group is opened, when the filter changes what is on screen, and after every rebuild.
 
@@ -71,7 +71,7 @@ Those category colours are not fixed values. MO2 applies themes as Qt stylesheet
 
 ### Finding one mod in a thousand
 
-The **Filter** box above the list takes words, not a pattern. Every word has to appear somewhere in the row — the mod name, the file line, the Nexus page name, or the note — so `cet frame` finds *CET Frame Generation* without your having to remember which order the words came in. Versions are deliberately not searched: typing `1.2` to find a mod would otherwise match every row that happens to sit on 1.2.
+The **Filter** box above the list takes words, not a pattern. Every word has to appear somewhere in the row — the mod name, the chain name, the Nexus page name, or the note — so `cet frame` finds *CET Frame Generation* without your having to remember which order the words came in. Versions are deliberately not searched: typing `1.2` to find a mod would otherwise match every row that happens to sit on 1.2.
 
 While a filter is active:
 
@@ -125,22 +125,6 @@ Update%20Manager\note=Staying on v1.0 as it does not require Heart of Cydonia
 Update%20Manager\note_version=1.3
 ```
 
-### When the page has moved past your file
-
-Say you installed the optional *Collision Mesh Preview* file from the *World Builder* page. That file has only ever been uploaded once, so there is genuinely no update *for it* — but the main World Builder file has moved to 1.0.81. MO2's own check calls that an update, because it compares page versions.
-
-Those mods stay under **Up to date**, where they belong, and get a violet dot plus a note in the Notes column: *"Your file is the newest of its kind. The page itself is now at 1.0.81, so check it if this stops working."*
-
-This was a top-level group once, and that was a mistake. Every other group has an action attached — download it, install it, decide whether to keep it. This one has none: there is no newer file to fetch, only a page worth a glance. Sitting beside real work, it read as a to-do item that could never be completed, and an entry that never clears is one you eventually stop reading — along with the groups next to it. As an annotation on an up-to-date mod, it is there when you go looking, which is exactly when you would wonder why MO2 disagrees.
-
-The condition for the note is deliberately hard to meet. Three things must all hold:
-
-1. The file you installed is **not** the page's primary upload. If it is, the page version tracks it and can never be ahead.
-2. Both your file's version and the page's version are **plain dotted numbers**. Anything else — `1.0.0joker`, `1.0.1b`, a date, a build string — means the author numbers that file on its own scheme, and comparing it against the page version is meaningless.
-3. The page version is genuinely higher.
-
-Condition 2 is stricter than `mobase.VersionInfo`, whose regex is a prefix match (`versioninfo.cpp:27`) and happily reads `1.0.0joker` as a perfectly good `1.0.0`. That leniency is right for "is there a newer file in this line?" and wrong here, where it manufactures comparisons between unrelated numbering schemes. On a 77-mod test list, the three conditions together take this note from 11 mods to 2 — and both survivors are real optional add-ons sitting several versions behind their page.
-
 ### Quick scan vs deep scan
 
 **Rescan** (quick) asks Nexus what changed in each game since your last scan, checks only those mods, and re-verifies a rotating slice of the oldest cached results so delistings still surface over time.
@@ -158,32 +142,43 @@ Comparing an installed mod against the page version therefore gets two things wr
 | Disable Fake Lights with Path Tracing (16060) | `0.4` | Main file is at **v0.5**. Page version never bumped, so a page-level check says "up to date". |
 | Window Utils (26589) | `1.0.3` | Two separate downloads: *Window Utils* v1.0.0→v1.0.3 and *Window Utils Showcase* v1.0.0b→v1.0.1b. Both installed, both need updates, but they share one page. |
 
-This plugin compares **file lines** instead — the sequence of uploads sharing a file name. Each MO2 mod is pinned to its own line, so both Window Utils mods get their own row and their own correct answer, and the Fake Lights update is found despite the stale page version.
+Nexus' v3 API answers this directly. It models a page as a set of **update chains** — one per download, each an ordered list of that download's uploads — so the sequence no longer has to be inferred from file names and version strings. Each MO2 mod is pinned to one chain and compared only against that, which is why both Window Utils mods get their own row and their own correct answer, and why the Fake Lights update is found despite the stale page version.
 
-Pinning works in three steps, best first:
+A scan resolves that in four calls, none of them per-mod:
 
-1. **The exact Nexus file id.** MO2 records it in the mod's `meta.ini` under `[installedFiles]` as `1\fileid=…`. Unambiguous when present.
-2. **The installed version**, matched against each upload's own version.
-3. **The installation archive name.** Nexus file names are a prefix of the download filename; the longest match wins, so *Window Utils Showcase* beats *Window Utils*.
+1. **Status for every page**, batched — this is what flags a page as removed, hidden or under moderation.
+2. **Installed file ids to their chain**, batched. The v3 `game_scoped_id` *is* the legacy file id, which is the one MO2 records in the mod's `meta.ini` under `[installedFiles]`, so this is exact when it is there.
+3. **The page's chains**, only for mods where it is not. See below.
+4. **Each chain's versions**, cached on disk and re-fetched only when Nexus says the mod changed or the copy is older than `recheck_days`.
 
-Step 1 is unavailable more often than you would expect — 26 of 543 mods in a real Starfield profile carry no `[installedFiles]` entry, having been installed before MO2 recorded one. Any tie left after steps 2 and 3 is broken toward the more plausible file: still current, then the page's primary upload, then a main file, then newest.
+### Which upload in a chain is the current one
 
-If none match, the plugin falls back to the page version and says so in the Notes column.
+Not the highest `position`. Position records where an upload sits in the chain, and an author who back-fills old files gets them appended at the end.
 
-Some authors put the version *in* the file name — *World Builder 1.0.0*, *World Builder 1.0.81* — which would make every upload its own one-member line and hide the update entirely. Version tokens are therefore stripped when deriving a line's identity, carefully enough that a *4K Texture Pack* keeps its name.
+Neither is `is_primary`, despite the name. In four of five chains examined it was set on an *archived* upload holding the highest whole-numbered position, while the file people actually want sat just below it at a fractional one.
 
-The **File** column shows the file line whenever it differs from the MO2 mod name. In the Files tab, `•` marks the file you currently have installed and `✓` marks the one that will be downloaded.
+| Chain | What the obvious field says | What is actually current |
+| --- | --- | --- |
+| 7237540 | Highest position is an archived *"v1.04 do not download"* at `4.0` | **v1.07**, main, at `3.77` |
+| 2764699 | `is_primary` is set on v2.0.17, archived, at `31.0` | **v2.0.21**, main, at `30.9` |
 
-A different file at the *same* version is **not** treated as an update. It once was, on the theory that it meant a silent re-upload; across a 543-mod Starfield list that fired four times and was wrong every time — a main file beside a miscellaneous one, an optional 1k texture pack beside the full-size main, an archived copy of the very file already installed. Those are alternatives, not successors.
+`category == "main"` is the one field that holds up, so that decides it — highest-positioned main file, falling back to the newest upload Nexus has not retired, and only then to `is_primary`. Getting this wrong cost twelve false updates before it was found.
 
-For the same reason, a file line is only widened past an exact name match when doing so leaves **at most one still-current upload**. Authors who name each release after its version (*World Builder 1.0.0* → *1.0.81*) need the widening; authors who name *variants* that way do not. The tell is several simultaneously-current members:
+The comparison that follows needs no version parsing at all: your file is an update if Nexus has retired it, or if the chain's current file sits at a higher position. That quietly fixes a class of bug that version strings cannot — *MovementAndCameraTweaks* went `v1.41` → `v1.5`, which every semantic comparison reads as a downgrade because 41 > 5, while the author meant it as a decimal. A different upload that Nexus has neither retired nor promoted is **not** an update; it is another current file on the same chain, which is what `2.1` and `2.1-alternate` are to each other.
 
-- *Simply Faster Ladders* offers 125 / 150 / 175 / 200 Percent as four current MAIN files. You install one.
-- *Starfield HD Overhaul* hosts eighteen parts on one page, each its own MAIN file at its own version. The page reads 3.14 because part 18 does; part 01 at 3.08 is perfectly current.
+### When MO2 never recorded a file id
 
-Within a line, a successor also has to share the installed file's category — a main file is not the successor of an optional one just because it is newer. That preference is dropped once your file is marked `OLD_VERSION`, since every superseded upload ends up in that category whatever it started as.
+MO2 only started writing `[installedFiles]` at some point, so a few percent of any real profile has nothing exact to resolve — 26 of 543 mods in a real Starfield profile. Those fall back to matching the page's chain names against the installation archive name, then the MO2 mod name, longest match first.
 
-**A successor is a higher version — or Nexus saying so directly.** Version strings are not always orderable: *MovementAndCameraTweaks* went `v1.41` → `v1.5`, which every semantic comparison reads as a downgrade because 41 > 5, while the author meant it as a decimal. So when no file in the line parses as higher *and* Nexus has marked your file `OLD_VERSION` or `ARCHIVED`, the newest live upload in that line is taken as the update. Nexus's own categories are unambiguous where the numbers are not. While your file is still current, the version comparison stands — that is what keeps variants like `2.1` and `2.1-alternate` from looking like updates to each other.
+The *page* name is deliberately not used. It describes the page rather than any one download, so it cannot discriminate between that page's chains — and it usually reads like the longest of them, which made it actively wrong. Page 9643 offers `LaserSightDots_Enabled` and `LaserSightDots_Enabled_BulletFollowsDot`; matching on the page name picked the latter for a mod installed from the former.
+
+A chain chosen this way is cached, keyed on the evidence that produced it rather than on the page, because several MO2 mods can share one page and land on different chains. Keying by page let whichever was seen last overwrite the other.
+
+Failing all of that, the mod lands in **Not checked** and says so: MO2 has no record of which file it came from and the page has several candidates. Reinstalling it from Nexus fixes it permanently, because MO2 writes the file id.
+
+### What the columns show
+
+The **File** column shows the chain's name whenever it differs from the MO2 mod name. In the Files tab, `•` marks the file you currently have installed and `✓` marks the one that will be downloaded.
 
 ## How it authenticates
 
@@ -217,7 +212,9 @@ Nothing is written to the credential store, and the token is never logged or dis
 - **Mods with no Nexus id are skipped** — separators, hand-built mods, xEdit/CK output folders, Creation Club content. The count is shown after each scan.
 - **Version comparison is best-effort.** Nexus version strings are free text; some authors use dates or build numbers. When two versions can't be parsed, a difference is reported as an update rather than silently ignored.
 - **Two MO2 mods from the same Nexus page** each get their own row and their own comparison, but the page is only queried once.
-- **Each queried page costs two requests** — the page itself for availability, plus its file list. The file list is cached, so a page that hasn't changed costs nothing on the next scan.
+- **Scanning is batched, not per-mod.** Page status and installed-file lookups go out in batch requests; only update chains are fetched individually, and those are cached, so a chain that has not changed costs nothing on the next scan. A 1071-mod profile with 908 pages settles in around six requests.
+- **The Files tab is v1 and is not cached.** File size, description and per-file changelog have no v3 equivalent, so opening a mod costs two requests each time. Classification never touches them.
+- **A page that has moved past your file is no longer flagged.** Comparing your file against the *page* version needed a page version, and v3 chains do not carry one. It used to be an annotation on an up-to-date row; the case it caught — you have the newest of an optional file while the page's main file has moved on — is real but no longer detected.
 - **The cache is shared** across MO2 instances on the same install — it lives in `plugins/data/update_manager_cache.json`. Delete that file to force a clean baseline.
 - **Rate limits** are read from Nexus' own `x-rl-*` response headers and shown in the window. The scan stops early rather than running you out of requests.
 - **Download progress comes from MO2, not from polling.** `IDownloadManager` exposes `onDownloadComplete` / `onDownloadFailed` / `onDownloadPaused`, and the id returned by `startDownloadNexusFileForGame` is the same one those callbacks report. Note that MO2 returns `0` when it declines to queue a download at all — a collection link, or a file for a different game (`downloadmanager.cpp:745`). Those handlers cannot be unregistered, so they check that the window is still open before touching anything.
@@ -256,7 +253,7 @@ The one thing modelled rather than stubbed is `mobase.VersionInfo`, because `sca
 | `dialog.py` | The window |
 | `updater.py` | Scan engine: decides what to ask Nexus, classifies the answers |
 | `nexus.py` | Async Nexus v1 client on QtNetwork, with rate-limit tracking |
-| `scanner.py` | Reads MO2's modlist, maps game names to Nexus domains, resolves file lines, clears MO2's ignore flag |
+| `scanner.py` | Reads MO2's modlist, maps game names to Nexus domains, places mods in update chains, clears MO2's ignore flag |
 | `downloads.py` | Indexes MO2's downloads folder by `(mod id, file id)` |
 | `theme.py` | Category colours solved for contrast against the live theme |
 | `cache.py` | On-disk record of the last known state of each mod |

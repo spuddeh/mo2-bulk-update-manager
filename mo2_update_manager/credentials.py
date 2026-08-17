@@ -28,7 +28,6 @@ from .log import get_logger, tag
 _log = get_logger("credentials")
 
 CRED_TYPE_GENERIC = 1
-ERROR_NOT_FOUND = 1168
 
 OAUTH_CREDENTIAL = "ModOrganizer2_NEXUS_OAUTH_TOKENS"
 APIKEY_CREDENTIAL = "ModOrganizer2_APIKEY"
