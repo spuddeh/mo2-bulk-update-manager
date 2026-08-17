@@ -53,6 +53,19 @@ _FALLBACK_DOMAINS = {
 }
 
 
+# Per-mod plugin settings. MO2 keeps these in the mod's own meta.ini under
+# ``[Plugins]`` and writes them itself, so this is the one place the plugin can
+# remember something about a mod without editing a file MO2 owns.
+FORCE_SETTING = "force_update"  # a version to offer despite MO2's ignore flag
+NOTE_SETTING = "note"  # why the user decided whatever they decided
+NOTE_VERSION_SETTING = "note_version"  # the latest version when they wrote it
+
+
+def _text(value) -> str:
+    """A plugin setting as a string, whatever MO2 hands back for an empty one."""
+    return "" if value is None else str(value)
+
+
 class ModEntry:
     """One installed mod that can be checked against Nexus."""
 
@@ -78,6 +91,9 @@ class ModEntry:
         "latest_file",
         "download",
         "ignored_version",
+        "forced_version",
+        "note",
+        "note_version",
         "page_note",
         "chain_id",
         "chain_position",
@@ -99,7 +115,7 @@ class ModEntry:
     ERROR = "error"
     UNCHECKED = "unchecked"
 
-    def __init__(self, mod, domain: str):
+    def __init__(self, mod, domain: str, settings: Optional[dict] = None):
         self.internal_name = mod.name()
         self.display_name = mod.name()
         self.mod_id = mod.nexusId()
@@ -122,6 +138,18 @@ class ModEntry:
         self.download = None  # DownloadInfo when the newer file is already local
         # MO2's "Ignore update" records the version the user dismissed.
         self.ignored_version = mod.ignoredVersion().canonicalString()
+        # Everything this window has been told about the mod by hand, kept as
+        # plugin settings in the mod's own meta.ini -- which MO2 reads and
+        # writes itself, so none of it goes behind its back.
+        settings = settings or {}
+        # A version this window was told to offer anyway, in spite of MO2's
+        # ignore flag. Scoped to that one version, exactly as MO2 scopes the
+        # dismissal it overrides -- a later release is a new decision.
+        self.forced_version = _text(settings.get(FORCE_SETTING))
+        # Why the user made whatever decision they made about this mod, in
+        # their own words, and the latest version at the time they wrote it.
+        self.note = _text(settings.get(NOTE_SETTING))
+        self.note_version = _text(settings.get(NOTE_VERSION_SETTING))
         # Set to the page's version when the page has moved past this file.
         # Purely informational -- there is nothing to download.
         self.page_note = ""
@@ -211,8 +239,25 @@ def nexus_domain(organizer: mobase.IOrganizer, game_name: str) -> str:
     return _FALLBACK_DOMAINS.get(game_name.lower(), "")
 
 
+def read_overrides(mod, plugin_name: str) -> dict:
+    """Everything this plugin has stored on a mod, in one call.
+
+    ``pluginSettings`` returns the whole group at once, which matters on a
+    profile with a thousand mods: asking key by key would be one round trip
+    through MO2 per setting per mod.
+    """
+    if not plugin_name:
+        return {}
+    try:
+        return dict(mod.pluginSettings(plugin_name) or {})
+    except Exception:
+        return {}
+
+
 def collect_mods(
-    organizer: mobase.IOrganizer, include_disabled: bool = True
+    organizer: mobase.IOrganizer,
+    plugin_name: str = "",
+    include_disabled: bool = True,
 ) -> tuple[list[ModEntry], list[str], int]:
     """Gather every Nexus-backed mod in the current profile.
 
@@ -253,7 +298,7 @@ def collect_mods(
         # Several MO2 mods can share one Nexus page -- a main file plus an
         # addon, say. Each keeps its own row and its own file line; the page
         # itself is only queried once (see UpdateScan).
-        entry = ModEntry(mod, domain)
+        entry = ModEntry(mod, domain, read_overrides(mod, plugin_name))
         entry.enabled = enabled
         entries.append(entry)
 
@@ -710,15 +755,94 @@ def is_ignored(entry: ModEntry) -> bool:
     """True when MO2 was told to ignore exactly this version.
 
     MO2 dismisses a *specific* version, so anything newer than what the user
-    waved away should start nagging again.
+    waved away should start nagging again -- and a version this window was
+    told to offer anyway outranks the dismissal entirely.
     """
     ignored = (entry.ignored_version or "").strip()
     if not ignored or not entry.latest_version:
         return False
+
+    forced = (entry.forced_version or "").strip()
+    if forced and _normalize(forced) == _normalize(entry.latest_version):
+        return False
+
     if _normalize(ignored) == _normalize(entry.latest_version):
         return True
     # Ignored something even newer (rare, but possible after a downgrade).
     return not is_newer(ignored, entry.latest_version)
+
+
+# MO2 keeps a mod's ignore flag as a plain ``ignoredVersion=`` under
+# ``[General]`` (``modinforegular.cpp:96``), and clearing it writes the key
+# back empty rather than removing it (``modinforegular.cpp:260``).
+_IGNORED_KEY = "ignoredversion="
+
+
+def clear_ignored_version(mod_path: str) -> Optional[str]:
+    """Clear MO2's "ignore update" flag on a mod. Returns an error, or None.
+
+    ``IModInterface`` exposes ``ignoredVersion()`` but no setter -- the Python
+    bindings stop at the getter (``basic_classes.cpp:253``) -- so the flag can
+    only be reached through the mod's ``meta.ini``, which this plugin already
+    reads for its installed file ids.
+
+    Rewrites the one line and leaves the rest of the file byte-for-byte alone,
+    for the same reason ``downloads.hide`` does: a mod's meta carries the whole
+    Nexus description as one escaped value, and round-tripping that through an
+    INI parser is a large risk for no gain.
+
+    **MO2 holds its own copy.** ``ModInfoRegular`` reads meta.ini once and
+    writes it back from memory whenever the mod is marked changed, including
+    at shutdown (``modinforegular.cpp:68``). So this lands for certain on MO2's
+    next start, and can be undone within this session if something else edits
+    the same mod. The caller is expected to say so.
+    """
+    if not mod_path:
+        return "MO2 gave no folder for this mod."
+
+    path = os.path.join(mod_path, "meta.ini")
+    try:
+        # newline="" so Windows line endings survive; surrogateescape so the
+        # description blob comes back out exactly as it went in.
+        with open(
+            path, "r", encoding="utf-8", errors="surrogateescape", newline=""
+        ) as handle:
+            lines = handle.read().splitlines(keepends=True)
+    except OSError as exc:
+        return f"could not read meta.ini: {exc}"
+
+    newline = "\r\n" if any(line.endswith("\r\n") for line in lines) else "\n"
+
+    out, section, cleared = [], "", False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("["):
+            section = stripped.lower()
+        elif section == "[general]" and stripped.lower().startswith(_IGNORED_KEY):
+            out.append(f"ignoredVersion={newline}")
+            cleared = True
+            continue
+        out.append(line)
+
+    if not cleared:
+        # Nothing to clear is success, not failure: the flag is already off.
+        return None
+
+    temp = path + ".umd-tmp"
+    try:
+        with open(
+            temp, "w", encoding="utf-8", errors="surrogateescape", newline=""
+        ) as handle:
+            handle.writelines(out)
+        os.replace(temp, path)
+    except OSError as exc:
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+        return f"could not update meta.ini: {exc}"
+
+    return None
 
 
 def is_newer(installed: str, latest: str) -> bool:

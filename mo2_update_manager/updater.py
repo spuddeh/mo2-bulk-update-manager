@@ -76,6 +76,44 @@ def _chunks(items: list, size: int = BATCH_LIMIT):
         yield items[start : start + size]
 
 
+def note_download(entry: ModEntry, downloads: dict) -> None:
+    """Move an update onto the install queue when its archive is already local.
+
+    Module level rather than a scan method because the window needs it too: a
+    mod the user un-ignores by hand becomes an update outside any scan, and it
+    deserves the same answer to "do I already have this file?" that the scan
+    would have given it.
+    """
+    if not downloads:
+        return
+
+    info = find_download(
+        downloads, entry.mod_id, (entry.latest_file or {}).get("file_id")
+    )
+    if info is None:
+        return
+
+    if not info.usable:
+        # The archive is there but MO2 has installed it before, so it is not
+        # waiting for anything. Say so on the row rather than moving it into
+        # the install queue -- and note that autohide means the user will not
+        # find it in the Downloads tab.
+        entry.message = (
+            f"The file is in your downloads ({info.file_name}) but MO2 has "
+            "installed that archive already"
+            + (", and it is hidden from the Downloads tab." if info.hidden else ".")
+        )
+        return
+
+    entry.download = info
+    entry.status = ModEntry.DOWNLOADED
+    entry.message = (
+        "Already downloaded, hidden from the Downloads tab."
+        if info.hidden
+        else "Already downloaded, not installed."
+    )
+
+
 class UpdateScan(QObject):
     """Drives a full pass over the modlist and reports classified results."""
 
@@ -586,34 +624,7 @@ class UpdateScan(QObject):
             entry.message = f"Update to {entry.latest_version} ignored in MO2."
             return
 
-        if not self._downloads:
-            return
-
-        info = find_download(
-            self._downloads, entry.mod_id, (entry.latest_file or {}).get("file_id")
-        )
-        if info is None:
-            return
-
-        if not info.usable:
-            # The archive is there but MO2 has installed it before, so it is not
-            # waiting for anything. Say so on the row rather than moving it into
-            # the install queue -- and note that autohide means the user will
-            # not find it in the Downloads tab.
-            entry.message = (
-                f"The file is in your downloads ({info.file_name}) but MO2 has "
-                "installed that archive already"
-                + (", and it is hidden from the Downloads tab." if info.hidden else ".")
-            )
-            return
-
-        entry.download = info
-        entry.status = ModEntry.DOWNLOADED
-        entry.message = (
-            "Already downloaded, hidden from the Downloads tab."
-            if info.hidden
-            else "Already downloaded, not installed."
-        )
+        note_download(entry, self._downloads)
 
     # -- wrap up -----------------------------------------------------------
 
