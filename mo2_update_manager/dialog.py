@@ -70,7 +70,6 @@ _GROUPS = (
     (ModEntry.UPDATE, "Updates available"),
     (ModEntry.DELISTED, "No longer on Nexus"),
     (ModEntry.HIDDEN, "Hidden or unavailable"),
-    (ModEntry.PAGE_CHANGED, "Page updated, your file unchanged"),
     (ModEntry.IGNORED, "Ignored in MO2"),
     (ModEntry.ERROR, "Could not be checked"),
     (ModEntry.UNCHECKED, "Not checked"),
@@ -85,7 +84,7 @@ _INSTALLABLE = (ModEntry.DOWNLOADED,)
 _CHECKABLE = _DOWNLOADABLE + _INSTALLABLE
 
 # Groups that start collapsed: nothing here needs the user to act.
-_COLLAPSED = (ModEntry.CURRENT, ModEntry.PAGE_CHANGED, ModEntry.IGNORED)
+_COLLAPSED = (ModEntry.CURRENT, ModEntry.IGNORED)
 
 # Groups whose rows carry a coloured mark; the rest read as ordinary text.
 _MARKED = (
@@ -93,7 +92,6 @@ _MARKED = (
     ModEntry.UPDATE,
     ModEntry.DELISTED,
     ModEntry.HIDDEN,
-    ModEntry.PAGE_CHANGED,
 )
 
 # Nexus file categories, best-first, for picking a default download.
@@ -456,6 +454,7 @@ class UpdateManagerDialog(QDialog):
             (counts.get(ModEntry.HIDDEN, 0), "hidden"),
             (counts.get(ModEntry.IGNORED, 0), "ignored"),
             (counts.get(ModEntry.CURRENT, 0), "up to date"),
+            (sum(1 for e in entries if e.page_note), "on a page that has moved on"),
         ]
         summary = ", ".join(f"{n} {label}" for n, label in parts if n) + "."
         if self._skipped_count:
@@ -551,6 +550,10 @@ class UpdateManagerDialog(QDialog):
                 # readable; the category shows as a mark beside it.
                 if status in _MARKED:
                     item.setIcon(0, theme.dot(status))
+                elif entry.page_note:
+                    # Up to date, but the page has moved past this file. Marked
+                    # so it can be spotted inside a long up-to-date group.
+                    item.setIcon(0, theme.dot(ModEntry.PAGE_CHANGED))
                 for column in (1, 4):
                     item.setForeground(column, muted)
                 if status in _CHECKABLE:
@@ -659,6 +662,8 @@ class UpdateManagerDialog(QDialog):
             ("Last updated", _timestamp(entry.latest_file_update) or "-"),
             ("Status", _GROUP_TITLES.get(entry.status, entry.status)),
         ]
+        if entry.page_note:
+            rows.append(("Page version", entry.page_note))
         if entry.ignored_version:
             rows.append(("Ignored version", entry.ignored_version))
         if entry.download is not None:
@@ -666,7 +671,9 @@ class UpdateManagerDialog(QDialog):
 
         theme = self._get_theme()
         label = theme.muted(0.35).name()
-        accent = theme.colour(entry.status).name()
+        accent = theme.colour(
+            ModEntry.PAGE_CHANGED if entry.page_note else entry.status
+        ).name()
         body = "".join(
             f"<tr><td style='padding-right:12px;color:{label}'>{html.escape(k)}</td>"
             f"<td>{html.escape(v)}</td></tr>"

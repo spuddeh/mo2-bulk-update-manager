@@ -378,13 +378,18 @@ class UpdateScan(QObject):
                     else "Newer upload with the same version number."
                 )
             elif self._page_moved_on(installed, page):
-                # This file line is current, but something else on the page is
-                # not -- typically an optional add-on for a main file that has
-                # since been updated. MO2 reports this as an update; it is not
-                # one for this file, but hiding it entirely surprises people.
-                entry.status = ModEntry.PAGE_CHANGED
-                entry.latest_version = page.get("version", "") or entry.latest_version
-                entry.message = "Your file is the newest of its kind; the page has other newer files."
+                # This file line is current, but the page has moved past it --
+                # typically an optional add-on for a main file that has since
+                # been updated. MO2 reports that as an update. It is not one:
+                # there is no newer file to fetch, so this is an annotation on
+                # an up-to-date mod rather than a category of its own.
+                entry.status = ModEntry.CURRENT
+                entry.page_note = page.get("version", "")
+                entry.latest_version = entry.page_note or entry.latest_version
+                entry.message = (
+                    f"Your file is the newest of its kind. The page itself is now at "
+                    f"{entry.page_note}, so check it if this stops working."
+                )
             else:
                 entry.status = ModEntry.CURRENT
                 entry.message = ""

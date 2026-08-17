@@ -78,14 +78,19 @@ class ModEntry:
         "latest_file",
         "download",
         "ignored_version",
+        "page_note",
     )
 
     # status values
     UPDATE = "update"
     DOWNLOADED = "downloaded"  # the newer file is already in MO2's downloads
-    PAGE_CHANGED = "page_changed"  # this file line is current, the page moved on
     IGNORED = "ignored"  # an update exists, but MO2 was told to ignore it
     DELISTED = "delisted"
+    # Not a status: an annotation key, used to colour the mark on rows whose
+    # page has moved past the file they were installed from. It was a status
+    # once, and being a peer of "Updates available" implied an action that does
+    # not exist -- there is no newer file to fetch, only a page worth a glance.
+    PAGE_CHANGED = "page_changed"
     HIDDEN = "hidden"
     CURRENT = "current"
     ERROR = "error"
@@ -114,6 +119,9 @@ class ModEntry:
         self.download = None  # DownloadInfo when the newer file is already local
         # MO2's "Ignore update" records the version the user dismissed.
         self.ignored_version = mod.ignoredVersion().canonicalString()
+        # Set to the page's version when the page has moved past this file.
+        # Purely informational -- there is nothing to download.
+        self.page_note = ""
 
     @property
     def row_label(self) -> str:

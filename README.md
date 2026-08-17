@@ -53,7 +53,6 @@ Restart MO2. The tool appears under **Tools > Update Manager**.
 | **Updates available** | A newer file exists on Nexus and you don't have it | Tick it and hit **Download selected** |
 | **No longer on Nexus** | The page 404s or reports a removed status | Decide whether to keep the mod |
 | **Hidden or unavailable** | The page exists but is hidden or under moderation | Usually temporary; check back |
-| **Page updated, your file unchanged** | Your exact download is still the newest of its kind, but *something else* on that page is newer | Often fine. See below |
 | **Ignored in MO2** | You used MO2's *Ignore update* on exactly this version | Nothing |
 | **Could not be checked** | The request failed — network, rate limit, or a Nexus error | Rescan later; the reason is in the Notes column |
 | **Not checked** | No result and no cached record for this mod | Rescan. If it persists, run a deep scan |
@@ -65,15 +64,21 @@ Each category shows as a coloured dot beside the mod name and as the colour of i
 
 Those category colours are not fixed values. MO2 applies themes as Qt stylesheets rather than palettes, so there is no "is this dark?" flag to read — but a widget's *effective* palette does pick up the stylesheet's colours once Qt polishes it. The plugin measures the list's real background and then solves each category's lightness until it clears a 4.5:1 contrast ratio against it. Hues stay fixed so a category stays recognisable; only lightness and saturation move. On an unusual mid-tone background it falls back to the most readable value that hue can manage.
 
-**Page updated, your file unchanged** is the group worth understanding. Say you installed the optional *Collision Mesh Preview* file from the *World Builder* page. That file has only ever been uploaded once, so there is genuinely no update *for it* — but the main World Builder file has moved from 1.0.8 to 1.0.81. MO2's own check flags this as an update (it compares page versions); strictly it is not one. The group exists so the fact is visible without being mixed in with real updates.
+### When the page has moved past your file
 
-It is deliberately hard to get into. Three conditions must all hold:
+Say you installed the optional *Collision Mesh Preview* file from the *World Builder* page. That file has only ever been uploaded once, so there is genuinely no update *for it* — but the main World Builder file has moved to 1.0.81. MO2's own check calls that an update, because it compares page versions.
+
+Those mods stay under **Up to date**, where they belong, and get a violet dot plus a note in the Notes column: *"Your file is the newest of its kind. The page itself is now at 1.0.81, so check it if this stops working."*
+
+This was a top-level group once, and that was a mistake. Every other group has an action attached — download it, install it, decide whether to keep it. This one has none: there is no newer file to fetch, only a page worth a glance. Sitting beside real work, it read as a to-do item that could never be completed, and an entry that never clears is one you eventually stop reading — along with the groups next to it. As an annotation on an up-to-date mod, it is there when you go looking, which is exactly when you would wonder why MO2 disagrees.
+
+The condition for the note is deliberately hard to meet. Three things must all hold:
 
 1. The file you installed is **not** the page's primary upload. If it is, the page version tracks it and can never be ahead.
 2. Both your file's version and the page's version are **plain dotted numbers**. Anything else — `1.0.0joker`, `1.0.1b`, a date, a build string — means the author numbers that file on its own scheme, and comparing it against the page version is meaningless.
 3. The page version is genuinely higher.
 
-Condition 2 is stricter than `mobase.VersionInfo`, whose regex is a prefix match (`versioninfo.cpp:27`) and happily reads `1.0.0joker` as a perfectly good `1.0.0`. That leniency is right for "is there a newer file in this line?" and wrong here, where it manufactures comparisons between unrelated numbering schemes. On a 77-mod test list, the three conditions together take this group from 11 mods to 2 — and both survivors are real optional add-ons sitting several versions behind their page.
+Condition 2 is stricter than `mobase.VersionInfo`, whose regex is a prefix match (`versioninfo.cpp:27`) and happily reads `1.0.0joker` as a perfectly good `1.0.0`. That leniency is right for "is there a newer file in this line?" and wrong here, where it manufactures comparisons between unrelated numbering schemes. On a 77-mod test list, the three conditions together take this note from 11 mods to 2 — and both survivors are real optional add-ons sitting several versions behind their page.
 
 ### Quick scan vs deep scan
 
