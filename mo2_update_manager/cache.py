@@ -24,6 +24,11 @@ CACHE_FILENAME = "update_manager_cache.json"
 #    Older caches are discarded rather than migrated; a rebuild is one scan.
 SCHEMA_VERSION = 3
 
+# Bumped whenever the rule for choosing a mod's chain changes, so answers it
+# produced are dropped without discarding the chain contents and installed-file
+# resolutions, which are expensive and still correct.
+CHAIN_MATCH_REVISION = 2
+
 # Fields worth keeping from each v3 chain version. `game_scoped_id` is the
 # legacy file id, which is what MO2 records and what downloads are keyed on.
 _VERSION_FIELDS = (
@@ -72,12 +77,21 @@ class ScanCache:
         self._chains = raw.get("chains") or {}
         self._installed = raw.get("installed") or {}
 
+        if raw.get("chain_match") != CHAIN_MATCH_REVISION:
+            # The rule for picking a mod's chain has changed, so any chain
+            # chosen by the old one has to go. Everything else survives.
+            for record in self._mods.values():
+                record.pop("chain", None)
+                record.pop("chain_name", None)
+            self._dirty = True
+
     def save(self) -> Optional[str]:
         """Write the cache back. Returns an error string on failure."""
         if not self._dirty:
             return None
         payload = {
             "schema": SCHEMA_VERSION,
+            "chain_match": CHAIN_MATCH_REVISION,
             "mods": self._mods,
             "games": self._games,
             "chains": self._chains,

@@ -643,13 +643,20 @@ def choose_chain(entry: ModEntry, chains: list) -> Optional[dict]:
     if len(chains) == 1:
         return chains[0]
 
-    # The archive name is the best evidence, but it is not always there and is
-    # not always right: one mod on a real profile had no `installationFile` at
-    # all, and another pointed at a different mod's archive entirely. The mod's
-    # own name and the Nexus page name are worth trying too.
+    # The archive name is the best evidence, but it is not always there: one
+    # mod on a real profile had no `installationFile` at all. The MO2 mod name
+    # is a reasonable second, because people name a mod after the variant they
+    # installed.
+    #
+    # The *page* name is deliberately not used. It describes the page rather
+    # than any one download, so it cannot discriminate between that page's
+    # chains -- and it usually reads like the longest of them, which made it
+    # actively wrong. Page 9643 offers "LaserSightDots_Enabled" and
+    # "LaserSightDots_Enabled_BulletFollowsDot"; matching on the page name
+    # picked the latter for a mod installed from the former.
     haystacks = [
         _squash(text)
-        for text in (entry.installation_file, entry.display_name, entry.nexus_name)
+        for text in (entry.installation_file, entry.display_name)
         if text
     ]
     if haystacks:
