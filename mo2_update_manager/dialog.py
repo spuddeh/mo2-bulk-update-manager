@@ -17,7 +17,10 @@ try:
         QDialog,
         QHBoxLayout,
         QHeaderView,
+        QInputDialog,
         QLabel,
+        QLineEdit,
+        QMenu,
         QMessageBox,
         QProgressBar,
         QPushButton,
@@ -38,7 +41,10 @@ except ImportError:
         QDialog,
         QHBoxLayout,
         QHeaderView,
+        QInputDialog,
         QLabel,
+        QLineEdit,
+        QMenu,
         QMessageBox,
         QProgressBar,
         QPushButton,
@@ -59,14 +65,26 @@ from .cache import ScanCache
 from .credentials import resolve_auth
 from .log import get_logger, log_exception, tag
 from .nexus import NexusClient
-from .scanner import ModEntry, collect_mods
+from .scanner import (
+    FORCE_SETTING,
+    NOTE_SETTING,
+    NOTE_VERSION_SETTING,
+    ModEntry,
+    clear_ignored_version,
+    collect_mods,
+    is_ignored,
+    versions_match,
+)
 from .theme import Theme
-from .updater import UpdateScan
+from .updater import UpdateScan, note_download
 
 _ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.svg")
 _log = get_logger("ui")
 
 _ENTRY_ROLE = Qt.ItemDataRole.UserRole
+# On a group row: (status, title, member count), so the filter can rewrite the
+# heading without re-deriving what the group is.
+_GROUP_ROLE = Qt.ItemDataRole.UserRole + 1
 
 _GROUPS = (
     (ModEntry.DOWNLOADING, "Downloading"),
@@ -219,6 +237,12 @@ class UpdateManagerDialog(QDialog):
         self._in_flight: dict = {}
         self._refresh_pending = False
         self._closed = False
+        # Lowercased words the mod list is filtered down to; empty shows all.
+        self._filter_terms: list = []
+        # Mods whose MO2 "ignored" flag this window cleared. MO2 holds its own
+        # copy of every meta.ini, so touching one again would hand the stale
+        # value back -- see _write_back_versions.
+        self._unignored: set = set()
 
         self.setWindowTitle(f"Update Manager v{VERSION}")
         if os.path.exists(_ICON_PATH):
@@ -249,6 +273,25 @@ class UpdateManagerDialog(QDialog):
         header.addWidget(self._rate_label, 0)
         layout.addLayout(header)
 
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Filter:"), 0)
+        self._filter_box = QLineEdit()
+        self._filter_box.setPlaceholderText(
+            "Type part of a mod name. Several words all have to match."
+        )
+        self._filter_box.setClearButtonEnabled(True)
+        self._filter_box.setToolTip(
+            "Matches the mod name, the file line, the Nexus page name, the note "
+            "on the row and any note you wrote yourself.\n"
+            "Ticks you have already made survive filtering, so a hidden row that "
+            "is ticked still downloads."
+        )
+        self._filter_box.textChanged.connect(self._on_filter_typed)
+        filter_row.addWidget(self._filter_box, 1)
+        self._filter_label = QLabel("")
+        filter_row.addWidget(self._filter_label, 0)
+        layout.addLayout(filter_row)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self._tree = QTreeWidget()
@@ -261,6 +304,8 @@ class UpdateManagerDialog(QDialog):
         self._tree.itemSelectionChanged.connect(self._on_selection_changed)
         self._tree.itemDoubleClicked.connect(lambda *_: self._open_page())
         self._tree.itemChanged.connect(self._on_item_changed)
+        self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._tree.customContextMenuRequested.connect(self._on_context_menu)
         # Column widths only measure visible rows, so a group that starts
         # collapsed needs a refit once its contents appear.
         self._tree.itemExpanded.connect(lambda *_: _autofit(self._tree))
@@ -321,7 +366,9 @@ class UpdateManagerDialog(QDialog):
 
         controls = QHBoxLayout()
         self._select_all = QCheckBox("Select all")
-        self._select_all.setToolTip("Tick every update and every pending install.")
+        self._select_all.setToolTip(
+            "Tick every update and every pending install the filter is showing."
+        )
         # Tristate so it can show "some" while rows move between groups on
         # their own. `clicked` rather than `stateChanged`, so that programmatic
         # syncing never looks like the user asking for something.
@@ -403,9 +450,18 @@ class UpdateManagerDialog(QDialog):
         self._client.rateLimitChanged.connect(self._on_rate_limit)
 
         self._entries, skipped, self._disabled_count = collect_mods(
-            self._organizer, include_disabled=self._flag("check_disabled_mods", True)
+            self._organizer,
+            self._plugin_name,
+            include_disabled=self._flag("check_disabled_mods", True),
         )
         self._skipped_count = len(skipped)
+        for entry in self._entries:
+            if entry.internal_name in self._unignored:
+                # MO2 answers `ignoredVersion()` from the copy it read at
+                # startup, so a mod un-ignored in this session would come back
+                # into the Ignored group on the next Rescan. Disk says
+                # otherwise; follow disk.
+                entry.ignored_version = ""
         # Cheap and local: knowing what is already downloaded turns a wasted
         # download into a one-click install.
         self._downloads = downloads_index.scan(self._organizer.downloadsPath())
@@ -450,6 +506,7 @@ class UpdateManagerDialog(QDialog):
         count = len(self._entries) or len(
             collect_mods(
                 self._organizer,
+                self._plugin_name,
                 include_disabled=self._flag("check_disabled_mods", True),
             )[0]
         )
@@ -538,6 +595,14 @@ class UpdateManagerDialog(QDialog):
         mod_list = self._organizer.modList()
         for entry in entries:
             if entry.status != ModEntry.UPDATE or not entry.latest_version:
+                continue
+            if entry.internal_name in self._unignored:
+                # This mod's meta.ini was edited from under MO2, which still
+                # holds the old ignoredVersion in memory. `setNewestVersion`
+                # marks the mod changed, and a changed mod gets written back
+                # from memory at shutdown (`modinforegular.cpp:68`) -- which
+                # would put the ignore flag straight back. One missing update
+                # arrow in MO2's own list is the cheaper loss.
                 continue
             mod = mod_list.getMod(entry.internal_name)
             if mod is None:
@@ -716,6 +781,13 @@ class UpdateManagerDialog(QDialog):
             group.setForeground(0, QBrush(theme.colour(status)))
             group.setFlags(Qt.ItemFlag.ItemIsEnabled)
             group.setExpanded(status not in _COLLAPSED)
+            group.setData(0, _GROUP_ROLE, (status, title, len(members)))
+            if status == ModEntry.IGNORED:
+                group.setToolTip(
+                    0,
+                    "Right-click a mod here to download its update anyway, or to "
+                    "clear MO2's ignore flag.",
+                )
 
             for entry in members:
                 item = QTreeWidgetItem(
@@ -725,10 +797,14 @@ class UpdateManagerDialog(QDialog):
                         entry.row_label,
                         entry.installed_version or "-",
                         entry.latest_version or "-",
-                        entry.message,
+                        _notes_cell(entry),
                     ],
                 )
                 item.setData(0, _ENTRY_ROLE, entry)
+                if entry.note:
+                    # The cell is shortened to keep the column narrow, so the
+                    # whole note has to be reachable without opening a tab.
+                    item.setToolTip(4, entry.note)
                 # The name keeps the theme's own text colour so it stays
                 # readable; the category shows as a mark beside it.
                 if status in _MARKED:
@@ -743,7 +819,119 @@ class UpdateManagerDialog(QDialog):
                     item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                     item.setCheckState(0, Qt.CheckState.Unchecked)
 
+        # Filtering only has work to do when a filter is on: every row here was
+        # just created, so none of them is hidden and every heading already
+        # carries its full count. Skipping it spares a thousand setHidden calls
+        # on each of the rebuilds that happen while downloads land.
+        if self._filter_terms:
+            self._apply_filter()  # ends by refitting the columns itself
+        else:
+            self._autofit_soon()
+
+    def _autofit_soon(self) -> None:
+        """Size the columns now, and again once Qt has laid the tree out.
+
+        `resizeColumnToContents` measures the rows the view can see. A rebuild
+        that runs inside another event loop -- a context menu still unwinding,
+        a modal dialog closing -- measures a tree that has not been laid out
+        yet, and every column comes back at the header's default width. With
+        elision off, that quietly clips the Notes column: the note the user
+        just wrote is there in the row, just past the right-hand edge of a
+        100-pixel column.
+
+        Asking again from the event loop is the half that is reliable. The
+        immediate call only avoids a visible flicker in the ordinary case.
+        """
         _autofit(self._tree)
+        QTimer.singleShot(0, self._refit_columns)
+
+    def _refit_columns(self) -> None:
+        if self._closed:
+            return
+        try:
+            _autofit(self._tree)
+        except RuntimeError:
+            # The window was torn down between the timer and its callback.
+            self._closed = True
+
+    # -- filtering ---------------------------------------------------------
+
+    def _on_filter_typed(self, text: str) -> None:
+        # Splitting on whitespace and requiring every word makes "cet frame"
+        # find "CET Frame Generation" without caring about word order, which is
+        # what people type when they half-remember a name.
+        self._filter_terms = [word for word in str(text).lower().split() if word]
+        self._apply_filter()
+
+    def _apply_filter(self) -> None:
+        """Hide rows that do not match, and keep the group headings honest.
+
+        A hidden row is still a row: it keeps its tick, and `_checked_entries`
+        still finds it, so filtering never quietly drops something the user
+        already chose. What it must not do is let "Select all" reach rows that
+        are not on screen -- see `_update_items`.
+        """
+        terms = self._filter_terms
+
+        # A thousand setHidden calls, each repainting, is visibly slow to type
+        # against on a large profile. One repaint at the end is not -- and the
+        # expanding this does would otherwise fire itemExpanded, and so a full
+        # column refit, on every keystroke.
+        self._tree.setUpdatesEnabled(False)
+        blocked = self._tree.blockSignals(True)
+        try:
+            shown, total = self._filter_groups(terms)
+        finally:
+            self._tree.blockSignals(blocked)
+            self._tree.setUpdatesEnabled(True)
+
+        if terms:
+            self._filter_label.setText(f"Showing {shown} of {total}")
+        else:
+            self._filter_label.clear()
+        # Filtering opens groups that normally start collapsed, so it can bring
+        # rows into view that were never measured -- the widest mod name on the
+        # list may well be one of the thousand up-to-date ones.
+        self._autofit_soon()
+        # The master checkbox describes what is on screen, so it moves with the
+        # filter even though no tick changed.
+        self._sync_select_all()
+
+    def _filter_groups(self, terms: list) -> tuple:
+        shown = total = 0
+        for i in range(self._tree.topLevelItemCount()):
+            group = self._tree.topLevelItem(i)
+            meta = group.data(0, _GROUP_ROLE)
+            if meta is None:
+                continue
+            status, title, count = meta
+            total += count
+
+            if not terms:
+                for j in range(group.childCount()):
+                    group.child(j).setHidden(False)
+                group.setHidden(False)
+                group.setText(0, f"{title} ({count})")
+                group.setExpanded(status not in _COLLAPSED)
+                shown += count
+                continue
+
+            visible = 0
+            for j in range(group.childCount()):
+                child = group.child(j)
+                match = _matches(child.data(0, _ENTRY_ROLE), terms)
+                child.setHidden(not match)
+                visible += 1 if match else 0
+
+            shown += visible
+            group.setHidden(visible == 0)
+            group.setText(0, f"{title} ({visible} of {count})")
+            # A match inside a group that starts collapsed -- "Up to date" holds
+            # most of a large profile -- would otherwise be invisible.
+            if visible:
+                group.setExpanded(True)
+
+        return shown, total
 
     def _on_item_changed(self, *_):
         self._download_btn.setEnabled(bool(self._checked_entries(_DOWNLOADABLE)))
@@ -757,7 +945,7 @@ class UpdateManagerDialog(QDialog):
         untickable Downloading row the moment it is queued -- so "select all"
         would otherwise sit there checked with nothing checked beneath it.
         """
-        items = self._update_items()
+        items = self._update_items(visible_only=True)
         checked = sum(
             1 for item in items if item.checkState(0) == Qt.CheckState.Checked
         )
@@ -775,7 +963,7 @@ class UpdateManagerDialog(QDialog):
         self._select_all.blockSignals(blocked)
 
     def _on_select_all_clicked(self, *_) -> None:
-        items = self._update_items()
+        items = self._update_items(visible_only=True)
         if not items:
             self._sync_select_all()
             return
@@ -794,12 +982,23 @@ class UpdateManagerDialog(QDialog):
         self._tree.blockSignals(blocked)
         self._on_item_changed()
 
-    def _update_items(self, statuses=_CHECKABLE) -> list:
+    def _update_items(self, statuses=_CHECKABLE, visible_only: bool = False) -> list:
+        """Tickable rows. ``visible_only`` stops at what the filter is showing.
+
+        The two callers want different things. "Select all" must only reach
+        rows on screen, or a filtered list would tick a thousand invisible mods.
+        `_checked_entries` must reach every row, or typing in the filter box
+        would silently drop ticks the user had already made.
+        """
         items = []
         for i in range(self._tree.topLevelItemCount()):
             group = self._tree.topLevelItem(i)
+            if visible_only and group.isHidden():
+                continue
             for j in range(group.childCount()):
                 child = group.child(j)
+                if visible_only and child.isHidden():
+                    continue
                 entry = child.data(0, _ENTRY_ROLE)
                 if entry is not None and entry.status in statuses:
                     items.append(child)
@@ -818,6 +1017,252 @@ class UpdateManagerDialog(QDialog):
     def _current_entry(self) -> Optional[ModEntry]:
         item = self._tree.currentItem()
         return item.data(0, _ENTRY_ROLE) if item is not None else None
+
+    # -- overriding MO2's ignore flag --------------------------------------
+
+    def _on_context_menu(self, pos) -> None:
+        item = self._tree.itemAt(pos)
+        entry = item.data(0, _ENTRY_ROLE) if item is not None else None
+        if entry is None:
+            return
+        self._tree.setCurrentItem(item)
+
+        menu = QMenu(self._tree)
+        menu.setToolTipsVisible(True)
+        chosen: dict = {}
+
+        def add(handler, text: str, tip: str = ""):
+            action = menu.addAction(text)
+            if tip:
+                action.setToolTip(tip)
+            chosen[action] = handler
+
+        add(self._open_page, "Open on Nexus")
+        add(
+            lambda: self._edit_note(entry),
+            "Edit note..." if entry.note else "Add a note...",
+            "Why you left this mod the way it is, in your own words. Kept on the "
+            "mod itself, so it is still there next time.",
+        )
+
+        forced = bool(entry.forced_version) and entry.status != ModEntry.IGNORED
+        if entry.status == ModEntry.IGNORED:
+            menu.addSeparator()
+            add(
+                lambda: self._force_update(entry),
+                f"Download {entry.latest_version} anyway",
+                "Offer this update here without changing anything in MO2.",
+            )
+        elif forced:
+            menu.addSeparator()
+            add(
+                lambda: self._unforce_update(entry),
+                "Respect MO2's ignore flag again",
+            )
+
+        if (entry.ignored_version or "").strip():
+            add(
+                lambda: self._unignore(entry),
+                "Clear MO2's ignore flag for this mod",
+            )
+
+        handler = chosen.get(menu.exec(self._tree.viewport().mapToGlobal(pos)))
+        if handler is None:
+            return
+        # Run it from the event loop rather than from a slot connected to the
+        # action. Every one of these opens a modal dialog and then rebuilds the
+        # list, and doing that while the menu's own exec() is still unwinding
+        # rebuilds a tree Qt has not finished laying out -- which is how a saved
+        # note ended up invisible until the window was reopened.
+        QTimer.singleShot(0, handler)
+
+    def _mod_of(self, entry: ModEntry):
+        try:
+            return self._organizer.modList().getMod(entry.internal_name)
+        except Exception:
+            return None
+
+    def _remember(self, entry: ModEntry, values: dict) -> Optional[str]:
+        """Store plugin settings on a mod, through MO2. Returns an error, or None.
+
+        MO2 keeps these in the mod's own meta.ini and writes them itself, so
+        nothing here goes behind its back and the choices survive a restart.
+        """
+        mod = self._mod_of(entry)
+        if mod is None:
+            return f"MO2 no longer has a mod called {entry.internal_name}."
+        try:
+            for key, value in values.items():
+                mod.setPluginSetting(self._plugin_name, key, value)
+        except Exception as exc:
+            log_exception(
+                _log, f"Could not store settings on {entry.display_name}", exc
+            )
+            return f"MO2 refused to store this on the mod: {exc}"
+
+        if entry.internal_name in self._unignored:
+            # Storing a setting makes MO2 rewrite the whole meta.ini from
+            # memory, and its memory still holds the ignoredVersion this window
+            # cleared earlier in the session. Clear it again rather than let a
+            # note quietly bring the ignore flag back.
+            error = clear_ignored_version(mod.absolutePath())
+            if error:
+                _log.warning(tag(f"Could not re-clear the ignore flag: {error}"))
+        return None
+
+    def _set_force(self, entry: ModEntry, version: str) -> Optional[str]:
+        """Record that this version is wanted whatever MO2's ignore flag says."""
+        error = self._remember(entry, {FORCE_SETTING: version})
+        if error is None:
+            entry.forced_version = version
+        return error
+
+    def _set_note(self, entry: ModEntry, note: str) -> Optional[str]:
+        """Record why the user decided whatever they decided about this mod."""
+        error = self._remember(
+            entry,
+            {NOTE_SETTING: note, NOTE_VERSION_SETTING: entry.latest_version if note else ""},
+        )
+        if error is None:
+            entry.note = note
+            entry.note_version = entry.latest_version if note else ""
+        return error
+
+    def _edit_note(self, entry: ModEntry) -> None:
+        note, ok = QInputDialog.getMultiLineText(
+            self,
+            "Note",
+            f"Why does {entry.display_name} look the way it does?\n"
+            "Leave it empty to remove the note.",
+            entry.note,
+        )
+        if not ok:
+            return
+
+        note = note.strip()
+        error = self._set_note(entry, note)
+        if error:
+            QMessageBox.warning(self, "Could not save the note", error)
+            return
+
+        if note:
+            _log.info(
+                tag(
+                    f"Note on {entry.display_name} (at {entry.latest_version or '?'}): "
+                    f"{note}"
+                )
+            )
+            self._status_label.setText(f"Saved a note on {entry.display_name}.")
+        else:
+            _log.info(tag(f"Removed the note on {entry.display_name}"))
+            self._status_label.setText(f"Removed the note on {entry.display_name}.")
+        self._populate(self._entries)
+        self._render_details(entry)
+
+    def _reclassify_ignore(self, entry: ModEntry) -> None:
+        """Re-answer "is this ignored?" for one row, without a rescan.
+
+        The same two branches the scan takes (`UpdateScan._note_download`), so
+        a row changed by hand ends up wherever a fresh scan would have put it --
+        including the install queue, when the archive is already downloaded.
+        """
+        entry.download = None
+        if is_ignored(entry):
+            entry.status = ModEntry.IGNORED
+            entry.message = f"Update to {entry.latest_version} ignored in MO2."
+            return
+
+        entry.status = ModEntry.UPDATE
+        entry.message = ""
+        note_download(entry, self._downloads)
+        if entry.status == ModEntry.UPDATE and (entry.ignored_version or "").strip():
+            entry.message = (
+                f"MO2 ignores {entry.ignored_version}; offered here anyway."
+            )
+
+    def _force_update(self, entry: ModEntry) -> None:
+        error = self._set_force(entry, entry.latest_version)
+        if error:
+            QMessageBox.warning(self, "Could not override the ignore flag", error)
+            return
+        _log.info(
+            tag(
+                f"Offering {entry.display_name} {entry.latest_version} despite MO2's "
+                f"ignore flag ({entry.ignored_version})"
+            )
+        )
+        self._reclassify_ignore(entry)
+        self._populate(self._entries)
+        self._status_label.setText(
+            f"{entry.display_name} moved to updates. MO2 still ignores "
+            f"{entry.ignored_version}; only this window offers it."
+        )
+
+    def _unforce_update(self, entry: ModEntry) -> None:
+        error = self._set_force(entry, "")
+        if error:
+            QMessageBox.warning(self, "Could not clear the override", error)
+            return
+        _log.info(tag(f"Respecting MO2's ignore flag again for {entry.display_name}"))
+        self._reclassify_ignore(entry)
+        self._populate(self._entries)
+        self._status_label.setText(
+            f"{entry.display_name} follows MO2's ignore flag again."
+        )
+
+    def _unignore(self, entry: ModEntry) -> None:
+        mod = self._mod_of(entry)
+        path = mod.absolutePath() if mod is not None else ""
+        answer = QMessageBox.question(
+            self,
+            "Clear MO2's ignore flag",
+            f"Clear the ignored version ({entry.ignored_version}) on "
+            f"{entry.display_name}?\n\n"
+            "MO2 offers no way for a plugin to set this, so the flag is cleared "
+            "in the mod's meta.ini directly. MO2 keeps its own copy of that file "
+            "in memory, so its modlist will only agree once you restart it.\n\n"
+            "Use 'Download ... anyway' instead if you only want the update "
+            "offered here and would rather leave MO2 alone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        # Make MO2 flush this mod's meta *before* editing it, by storing a
+        # plugin setting on it: `setPluginSetting` writes the whole file from
+        # memory and then clears the mod's changed flag
+        # (`modinforegular.cpp:1009`). That does two things. It drops any
+        # override -- with the ignore flag gone there is nothing left to
+        # override -- and it leaves the mod unchanged as far as MO2 is
+        # concerned, so the write below is not undone at shutdown. Doing this
+        # after the edit instead would restore the flag immediately.
+        self._set_force(entry, "")
+
+        error = clear_ignored_version(path)
+        if error:
+            _log.warning(tag(f"Could not un-ignore {entry.display_name}: {error}"))
+            QMessageBox.warning(
+                self,
+                "Could not clear the ignore flag",
+                f"{entry.display_name}: {error}",
+            )
+            return
+
+        _log.info(
+            tag(
+                f"Cleared ignoredVersion={entry.ignored_version} in "
+                f"{entry.display_name}'s meta.ini"
+            )
+        )
+        self._unignored.add(entry.internal_name)
+        entry.ignored_version = ""
+        self._reclassify_ignore(entry)
+        self._populate(self._entries)
+        self._status_label.setText(
+            f"Cleared MO2's ignore flag on {entry.display_name}. Restart MO2 for "
+            "its own modlist to agree."
+        )
 
     # -- detail panes ------------------------------------------------------
 
@@ -883,6 +1328,10 @@ class UpdateManagerDialog(QDialog):
             rows.append(("Page version", entry.page_note))
         if entry.ignored_version:
             rows.append(("Ignored version", entry.ignored_version))
+        if entry.forced_version:
+            rows.append(("Offered anyway", entry.forced_version))
+        if entry.note:
+            rows.append(("Your note" + _note_age(entry), entry.note))
         if entry.download is not None:
             rows.append(("Already downloaded", entry.download.file_name))
 
@@ -893,7 +1342,9 @@ class UpdateManagerDialog(QDialog):
         ).name()
         body = "".join(
             f"<tr><td style='padding-right:12px;color:{label}'>{html.escape(k)}</td>"
-            f"<td>{html.escape(v)}</td></tr>"
+            # A note is free text and can be several lines; everything else here
+            # is a single value, so escaping then restoring the breaks is safe.
+            f"<td>{html.escape(v).replace(chr(10), '<br>')}</td></tr>"
             for k, v in rows
         )
         link = html.escape(entry.page_url)
@@ -1039,7 +1490,8 @@ class UpdateManagerDialog(QDialog):
             return
 
         lines = "\n".join(
-            f"  {e.display_name}  ->  {e.download.file_name}" for e in targets
+            f"  {e.display_name}  ->  {e.download.file_name}" + _note_block(e)
+            for e in targets
         )
         answer = QMessageBox.question(
             self,
@@ -1182,9 +1634,13 @@ class UpdateManagerDialog(QDialog):
             )
             return
 
+        # The note earns its keep here more than anywhere else: a mod ignored
+        # for a reason comes back into Updates the moment the author ships
+        # anything newer, and this is the last screen before it downloads.
         lines = "\n".join(
             f"  {e.display_name}  ->  {info.get('name')} "
             f"({info.get('version') or '?'}, {_size(info.get('size_kb'))})"
+            + _note_block(e)
             for e, info in plan
         )
         extra = (
@@ -1265,6 +1721,87 @@ class UpdateManagerDialog(QDialog):
 
 
 # -- helpers ---------------------------------------------------------------
+
+
+# A note the user wrote, marked so it is not read as something the scan said.
+_NOTE_MARK = "✎"
+# Notes are free text and the columns size to their widest cell, so one essay
+# would widen the Notes column for all thousand rows. The full text is on the
+# row's tooltip and in the Details pane.
+_NOTE_LIMIT = 70
+
+
+def _note_age(entry) -> str:
+    """" on <version>", when the note was written about something else.
+
+    Saying which release a note was written about matters most exactly when it
+    no longer matches: "needs another mod I don't want" was true of 2.0 and
+    says nothing about the 2.1 that has since replaced it.
+    """
+    if not entry.note_version or not entry.latest_version:
+        return ""
+    if versions_match(entry.note_version, entry.latest_version):
+        return ""
+    return f" on {entry.note_version}"
+
+
+def _note_label(entry) -> str:
+    """The user's note as one line, marked, and dated when it has gone stale."""
+    if not entry.note:
+        return ""
+
+    text = " ".join(entry.note.split())
+    if len(text) > _NOTE_LIMIT:
+        text = text[: _NOTE_LIMIT - 1].rstrip() + "…"
+
+    return f"{_NOTE_MARK}{_note_age(entry)} {text}"
+
+
+def _note_block(entry) -> str:
+    """The user's note, indented under its mod, for a confirmation dialog.
+
+    Not shortened here: a dialog listing a handful of mods has room, and this
+    is the last chance to read the reason before acting against it.
+    """
+    if not entry.note:
+        return ""
+    lines = [line.strip() for line in entry.note.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    head = f"\n      {_NOTE_MARK}{_note_age(entry)} {lines[0]}"
+    return head + "".join(f"\n        {line}" for line in lines[1:])
+
+
+def _notes_cell(entry) -> str:
+    """The Notes column: what the user wrote, then what the scan found.
+
+    The user's words come first because the scan's are boilerplate -- every row
+    in the Ignored group says the same sentence -- and a column you skim is one
+    where the distinctive part has to be at the left edge.
+    """
+    return "   ".join(part for part in (_note_label(entry), entry.message) if part)
+
+
+def _matches(entry, terms: list) -> bool:
+    """Whether a row answers to every word typed in the filter box.
+
+    Searches everything on the row that carries words -- the mod name, the file
+    line, the Nexus page name, the scan's own note and the user's. Versions are
+    deliberately left out: typing "1.2" to find a mod would otherwise match
+    every row that happens to sit on that version.
+    """
+    if entry is None:
+        return False
+    haystack = " ".join(
+        (
+            entry.display_name,
+            entry.row_label,
+            entry.message,
+            entry.nexus_name,
+            entry.note,
+        )
+    ).lower()
+    return all(term in haystack for term in terms)
 
 
 def _version_key(version: str) -> tuple:

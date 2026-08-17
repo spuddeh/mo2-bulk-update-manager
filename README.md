@@ -14,7 +14,9 @@ MO2 can tell you a mod has an update, but on a large modlist you have to force t
 - **Compares file lines, not page versions.** See [Multi-file mod pages](#multi-file-mod-pages) — this is why it catches updates MO2's own check misses.
 - **Flags delisted mods.** A mod page that returns 404, or reports `available: false` / a hidden status, is called out separately from ordinary updates.
 - **Knows what you already downloaded.** If the newer archive is sitting in MO2's downloads folder, the mod moves to *Downloaded, waiting to be installed* and the button becomes **Install selected** — no wasted second download.
-- **Respects MO2's ignored updates.** A version you dismissed with MO2's *Ignore update* goes to a collapsed *Ignored* group instead of nagging. A version newer than the one you ignored comes back.
+- **Respects MO2's ignored updates — and lets you overrule them.** A version you dismissed with MO2's *Ignore update* goes to a collapsed *Ignored* group instead of nagging, and a version newer than the one you ignored comes back. Right-click a row to take the update anyway, or to clear MO2's flag outright. See [Overriding MO2's ignore flag](#overriding-mo2s-ignore-flag).
+- **A filter box.** Type part of a name to cut a thousand-mod list down to the one you are looking for. Group headings show *"Up to date (3 of 1067)"* while filtering, empty groups drop out, and ticks you have already made survive.
+- **Notes in your own words.** Right-click any mod to record *why* it looks the way it does — "2.0 needs a mod I don't want, 1.9 still works". The note shows on the row, is searchable, and is repeated in the confirmation dialog the day you go to download that mod anyway. See [Why you left it that way](#why-you-left-it-that-way).
 - **Changelog and file description in the window.** Pick a mod, read what changed and what each file contains, without opening a browser.
 - **Download button.** Sends the chosen file to MO2's download queue via `IDownloadManager`, the same path MO2 uses for an `nxm://` link.
 - **Writes back to MO2.** Newer versions are recorded on the mod, so MO2's own modlist shows its update flag too. Turn this off in the plugin settings if you'd rather it didn't.
@@ -40,7 +42,7 @@ Restart MO2. The tool appears under **Tools > Update Manager**.
 ## Usage
 
 1. Open **Tools > Update Manager**. A quick scan starts automatically.
-2. Mods are grouped by outcome (see the table below).
+2. Mods are grouped by outcome (see the table below). Type in the **Filter** box to narrow the list to one mod.
 3. Click a mod to read its changelog and file list. The file that will be downloaded is marked ✓, the one you have installed is marked •; pick a different one with **Download this file instead**. Old and archived uploads are hidden — the World Builder page drops from twelve files to three — and **Show every file** brings them back for that session. The file you have and the one queued for download are never hidden, whatever category they sit in.
 4. Tick what you want, then **Download selected** or **Install selected**.
 5. Downloads land in MO2's Downloads tab, and the rows follow them: **Updates available** → **Downloading** → **Downloaded, waiting to be installed**, with no rescan. Ticks and the selected row survive each rebuild, so you can queue a batch and install it as it arrives.
@@ -54,16 +56,74 @@ Restart MO2. The tool appears under **Tools > Update Manager**.
 | **Updates available** | A newer file exists on Nexus and you don't have it | Tick it and hit **Download selected** |
 | **No longer on Nexus** | The page 404s or reports a removed status | Decide whether to keep the mod |
 | **Hidden or unavailable** | The page exists but is hidden or under moderation | Usually temporary; check back |
-| **Ignored in MO2** | You used MO2's *Ignore update* on exactly this version | Nothing |
+| **Ignored in MO2** | You used MO2's *Ignore update* on exactly this version | Nothing — or right-click to take it anyway, or to note why you didn't |
 | **Could not be checked** | The request failed — network, rate limit, or a Nexus error | Rescan later; the reason is in the Notes column |
 | **Not checked** | No result and no cached record for this mod | Rescan. If it persists, run a deep scan |
 | **Up to date** | Nothing newer in your file line | Nothing |
 
-Columns size themselves to their contents rather than stretching to fill, so long mod names are never squeezed or elided; the list scrolls sideways instead. Columns stay draggable and reorderable, and refit when a collapsed group is opened.
+Columns size themselves to their contents rather than stretching to fill, so long mod names are never squeezed or elided; the list scrolls sideways instead. Columns stay draggable and reorderable, and refit when a collapsed group is opened, when the filter changes what is on screen, and after every rebuild.
+
+That last one has to be asked for twice. `resizeColumnToContents` measures the rows the view can *see*, so a rebuild that runs inside another event loop — a context menu still unwinding, a modal dialog closing — measures a tree Qt has not laid out yet, and every column comes back at the header's default width. With elision off that clips silently rather than showing an ellipsis: a note saved from the right-click menu was in its row all along, just past the right-hand edge of a 100-pixel column. So the refit runs immediately *and* again from the event loop, and the right-click actions are dispatched after the menu has closed rather than from inside it.
 
 Each category shows as a coloured dot beside the mod name and as the colour of its group heading. Mod names keep the theme's own text colour, so nothing fights the stylesheet for readability.
 
 Those category colours are not fixed values. MO2 applies themes as Qt stylesheets rather than palettes, so there is no "is this dark?" flag to read — but a widget's *effective* palette does pick up the stylesheet's colours once Qt polishes it. The plugin measures the list's real background and then solves each category's lightness until it clears a 4.5:1 contrast ratio against it. Hues stay fixed so a category stays recognisable; only lightness and saturation move. On an unusual mid-tone background it falls back to the most readable value that hue can manage.
+
+### Finding one mod in a thousand
+
+The **Filter** box above the list takes words, not a pattern. Every word has to appear somewhere in the row — the mod name, the file line, the Nexus page name, or the note — so `cet frame` finds *CET Frame Generation* without your having to remember which order the words came in. Versions are deliberately not searched: typing `1.2` to find a mod would otherwise match every row that happens to sit on 1.2.
+
+While a filter is active:
+
+- Group headings count what is showing: **Up to date (3 of 1067)**. A group with no matches disappears rather than sitting there empty.
+- Groups that normally start collapsed open up, because a match hidden inside *Up to date* is not a match you can see.
+- **Select all** only reaches rows on screen. Ticking every one of a thousand invisible mods is never what anyone meant by it.
+- Ticks you have already made **survive**. A row you ticked and then filtered out still downloads, and still appears by name in the confirmation dialog — filtering is a way to look at the list, not a way to change what you asked for.
+
+### Overriding MO2's ignore flag
+
+MO2's *Ignore update* dismisses one specific version, and there is no way to take it back from MO2's own interface once the version is gone from view. Right-clicking a row here gives you two ways out, and they are not the same thing:
+
+Before either, consider **Add a note…** — see [Why you left it that way](#why-you-left-it-that-way). An ignore you can explain in six months is worth more than one you can undo.
+
+**"Download `<version>` anyway"** offers the update in this window and changes nothing in MO2. The mod moves out of *Ignored in MO2* and into *Updates available* — or straight into the install queue, if the archive is already in your downloads folder — with a note saying MO2 still ignores it. This is the one to use.
+
+It is recorded as a plugin setting *on the mod*, which MO2 stores in that mod's own `meta.ini` and writes itself, so it survives a restart and nothing goes behind MO2's back. It is scoped to the version it was granted for, exactly as MO2 scopes the dismissal it overrides: if the author later ships something newer, that is a new decision, and MO2's flag is stale anyway by then. Right-click again to give the decision back to MO2.
+
+**"Clear MO2's ignore flag for this mod"** genuinely un-ignores the mod, for MO2 as well as for this window — with a caveat the confirmation dialog states outright.
+
+`IModInterface` exposes `ignoredVersion()` and no setter; the Python bindings stop at the getter (`basic_classes.cpp:253`). So the flag can only be reached through the mod's `meta.ini`, which this plugin already reads for its installed file ids. It rewrites that one line and leaves the rest of the file byte-for-byte alone, for the same reason `downloads.hide` does — a mod's meta carries the entire Nexus description as one escaped value, and round-tripping that through an INI parser is a large risk for no gain.
+
+The caveat: **MO2 holds its own copy.** `ModInfoRegular` reads `meta.ini` once at startup and writes it back from memory whenever the mod is marked changed, including at shutdown (`modinforegular.cpp:68`). So MO2's own modlist keeps showing the mod as ignored until you restart it, however the file reads.
+
+Two things keep MO2 from simply undoing the write:
+
+1. **The mod is flushed first.** Storing a plugin setting on a mod makes MO2 write the whole `meta.ini` from memory and then clear that mod's changed flag (`modinforegular.cpp:1009`). Doing that immediately *before* the edit leaves the mod unchanged as far as MO2 is concerned, so nothing gets written over the top of it at shutdown.
+2. **This window stops dirtying it.** Writing newer versions back to MO2 is skipped for anything un-ignored this session, because `setNewestVersion` marks the mod changed and would hand the stale flag straight back.
+
+Something else editing that mod in the same session — renaming it, recategorising it, MO2's own Nexus check — will still restore the flag. That is the honest limit of a setter MO2 does not expose.
+
+### Why you left it that way
+
+An ignored update is a decision, and the reason for it lives in your head for about a week. *Winds of Cydonia* is a real example: the author's 2.0 requires a second mod the user doesn't want, the old version still works, and the changelog says as much. Six months later all that survives is a mod sitting in a collapsed group with no explanation, and the obvious move — take the update — is the wrong one.
+
+Right-click any mod and choose **Add a note…**. Whatever you type comes back:
+
+- **On the row**, in the Notes column after whatever the scan found, marked `✎` so it is never confused with something the plugin said. Long notes are shortened to keep the column from stretching across a thousand rows; the whole thing is on the row's tooltip and in the **Details** tab.
+- **In the filter.** Searching `cet` finds every mod you noted as needing Cyber Engine Tweaks, whatever they are called.
+- **In the confirmation dialog**, indented under the mod, when you tick it for download or install. This is where it earns its keep: MO2's ignore flag covers one version, so the day the author ships 2.1 the mod reappears under *Updates available* like any other — and the last screen before it downloads is the one that reminds you why you said no last time.
+
+A note records the latest version at the time you wrote it. Once the mod moves past that, the note is shown as **✎ on 2.0** rather than plain `✎`, because *"needs another mod I don't want"* was a statement about 2.0 and says nothing about the 2.1 that replaced it. Re-saving the note re-dates it.
+
+Notes are stored as plugin settings on the mod, which MO2 keeps in that mod's own `meta.ini` under `[Plugins]` and writes itself — the same mechanism as the ignore override, and for the same reason: nothing goes behind MO2's back and the note survives a restart. MO2's own *Notes* field is not used because the bindings expose `notes()` with no setter.
+
+If you go looking for one in a `meta.ini`, MO2 percent-escapes the plugin name, so it reads:
+
+```ini
+[Plugins]
+Update%20Manager\note=Staying on v1.0 as it does not require Heart of Cydonia
+Update%20Manager\note_version=1.3
+```
 
 ### When the page has moved past your file
 
@@ -178,6 +238,16 @@ python tools/umd_debug.py changelog starfield 8868 # changelog
 
 Credentials are never printed, only their source and length.
 
+`tools/test_overrides.py` checks the parts that can be checked without MO2 — the ignore override, the note formatting, the filter's matching, and the one place this plugin rewrites a file MO2 owns:
+
+```bash
+python tools/test_overrides.py
+```
+
+It leans on `tools/qt_stub.py`, which fakes just enough of PyQt and `mobase` for the plugin's modules to import. That is good for pure functions and nothing else: every Qt name resolves to a stub that accepts any call and returns zero, so a test that appears to exercise a widget is testing nothing. Anything that paints, or that actually calls MO2, still has to be checked by installing into an instance and restarting it.
+
+The one thing modelled rather than stubbed is `mobase.VersionInfo`, because `scanner.is_newer` asks it real questions. It is kept deliberately *lenient*, matching MO2's own prefix-matching parser (`versioninfo.cpp:27`) — a stricter stub once validated behaviour the live plugin did not have, and cost a round trip with a user.
+
 ### Layout
 
 | File | Role |
@@ -186,9 +256,12 @@ Credentials are never printed, only their source and length.
 | `dialog.py` | The window |
 | `updater.py` | Scan engine: decides what to ask Nexus, classifies the answers |
 | `nexus.py` | Async Nexus v1 client on QtNetwork, with rate-limit tracking |
-| `scanner.py` | Reads MO2's modlist, maps game names to Nexus domains, resolves file lines |
+| `scanner.py` | Reads MO2's modlist, maps game names to Nexus domains, resolves file lines, clears MO2's ignore flag |
 | `downloads.py` | Indexes MO2's downloads folder by `(mod id, file id)` |
 | `theme.py` | Category colours solved for contrast against the live theme |
 | `cache.py` | On-disk record of the last known state of each mod |
 | `credentials.py` | Reads MO2's Nexus credentials from the Windows Credential Manager |
 | `icon.svg` | Tools-menu icon |
+| `tools/umd_debug.py` | Drives the Nexus API from a shell, on the stdlib alone |
+| `tools/test_overrides.py` | Offline checks for the pure logic behind the window |
+| `tools/qt_stub.py` | Fakes PyQt and `mobase` so those checks can import the plugin |
