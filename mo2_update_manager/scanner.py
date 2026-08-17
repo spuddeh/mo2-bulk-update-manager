@@ -83,6 +83,7 @@ class ModEntry:
 
     # status values
     UPDATE = "update"
+    DOWNLOADING = "downloading"  # queued with MO2, not finished yet
     DOWNLOADED = "downloaded"  # the newer file is already in MO2's downloads
     IGNORED = "ignored"  # an update exists, but MO2 was told to ignore it
     DELISTED = "delisted"

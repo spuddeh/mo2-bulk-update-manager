@@ -43,12 +43,13 @@ Restart MO2. The tool appears under **Tools > Update Manager**.
 2. Mods are grouped by outcome (see the table below).
 3. Click a mod to read its changelog and file list. The file that will be downloaded is marked ✓, the one you have installed is marked •; pick a different one with **Download this file instead**. Old and archived uploads are hidden — the World Builder page drops from twelve files to three — and **Show every file** brings them back for that session. The file you have and the one queued for download are never hidden, whatever category they sit in.
 4. Tick what you want, then **Download selected** or **Install selected**.
-5. Downloads land in MO2's Downloads tab.
+5. Downloads land in MO2's Downloads tab, and the rows follow them: **Updates available** → **Downloading** → **Downloaded, waiting to be installed**, with no rescan. Ticks and the selected row survive each rebuild, so you can queue a batch and install it as it arrives.
 
 ### The groups
 
 | Group | What it means | What to do |
 | --- | --- | --- |
+| **Downloading** | This window queued the file with MO2 and it has not finished yet | Wait — the row moves on by itself |
 | **Downloaded, waiting to be installed** | A newer file for this mod is already in your downloads folder | Tick it and hit **Install selected** |
 | **Updates available** | A newer file exists on Nexus and you don't have it | Tick it and hit **Download selected** |
 | **No longer on Nexus** | The page 404s or reports a removed status | Decide whether to keep the mod |
@@ -157,6 +158,7 @@ Nothing is written to the credential store, and the token is never logged or dis
 - **Each queried page costs two requests** — the page itself for availability, plus its file list. The file list is cached, so a page that hasn't changed costs nothing on the next scan.
 - **The cache is shared** across MO2 instances on the same install — it lives in `plugins/data/update_manager_cache.json`. Delete that file to force a clean baseline.
 - **Rate limits** are read from Nexus' own `x-rl-*` response headers and shown in the window. The scan stops early rather than running you out of requests.
+- **Download progress comes from MO2, not from polling.** `IDownloadManager` exposes `onDownloadComplete` / `onDownloadFailed` / `onDownloadPaused`, and the id returned by `startDownloadNexusFileForGame` is the same one those callbacks report. Note that MO2 returns `0` when it declines to queue a download at all — a collection link, or a file for a different game (`downloadmanager.cpp:745`). Those handlers cannot be unregistered, so they check that the window is still open before touching anything.
 - **"Hide downloads after installation" is honoured.** MO2 applies that setting itself only on its own Downloads-tab install path (`organizercore.cpp:911`); the archive install that plugins get marks the download installed but never hides it. So when the setting is on, the plugin writes the same `removed=true` flag MO2 writes (`downloadmanager.cpp:910`), touching that one line and nothing else in the meta file.
 
 ## Development

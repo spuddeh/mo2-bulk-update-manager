@@ -23,6 +23,7 @@ except ImportError:
 # Hue per category, in degrees. Neutral categories carry no hue and are drawn
 # by blending the theme's own text colour toward its background instead.
 _HUES = {
+    "downloading": 172.0,  # teal: in flight
     "downloaded": 199.0,  # cyan: ready to install
     "update": 134.0,  # green: ready to download
     "delisted": 2.0,  # red: gone

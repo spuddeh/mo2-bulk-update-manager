@@ -9,7 +9,7 @@ import time
 from typing import Optional
 
 try:
-    from PyQt5.QtCore import Qt, QUrl
+    from PyQt5.QtCore import Qt, QTimer, QUrl
     from PyQt5.QtGui import QBrush, QDesktopServices, QFont, QIcon
     from PyQt5.QtWidgets import (
         QAbstractItemView,
@@ -30,7 +30,7 @@ try:
         QWidget,
     )
 except ImportError:
-    from PyQt6.QtCore import Qt, QUrl
+    from PyQt6.QtCore import Qt, QTimer, QUrl
     from PyQt6.QtGui import QBrush, QDesktopServices, QFont, QIcon
     from PyQt6.QtWidgets import (
         QAbstractItemView,
@@ -67,6 +67,7 @@ _ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.svg"
 _ENTRY_ROLE = Qt.ItemDataRole.UserRole
 
 _GROUPS = (
+    (ModEntry.DOWNLOADING, "Downloading"),
     (ModEntry.DOWNLOADED, "Downloaded, waiting to be installed"),
     (ModEntry.UPDATE, "Updates available"),
     (ModEntry.DELISTED, "No longer on Nexus"),
@@ -89,6 +90,7 @@ _COLLAPSED = (ModEntry.CURRENT, ModEntry.IGNORED)
 
 # Groups whose rows carry a coloured mark; the rest read as ordinary text.
 _MARKED = (
+    ModEntry.DOWNLOADING,
     ModEntry.DOWNLOADED,
     ModEntry.UPDATE,
     ModEntry.DELISTED,
@@ -209,12 +211,19 @@ class UpdateManagerDialog(QDialog):
         self._account = ""
         self._downloads: dict = {}
         self._theme: Optional[Theme] = None
+        # MO2 download id -> (entry, file record) for downloads this window
+        # started, so their rows can move on their own instead of waiting for
+        # the user to rescan.
+        self._in_flight: dict = {}
+        self._refresh_pending = False
+        self._closed = False
 
         self.setWindowTitle(f"Update Manager v{VERSION}")
         if os.path.exists(_ICON_PATH):
             self.setWindowIcon(QIcon(_ICON_PATH))
         self.setMinimumSize(1040, 640)
         self._build_ui()
+        self._watch_downloads()
         if self._flag("scan_on_open", True):
             self._start_scan(deep=False)
         else:
@@ -378,6 +387,12 @@ class UpdateManagerDialog(QDialog):
         if self._client is not None:
             self._client.cancel()
 
+        # A rescan builds fresh ModEntry objects, so anything still in flight
+        # would be pointing at rows that no longer exist. The rescan re-reads
+        # the downloads folder anyway, which is what those rows would have
+        # become.
+        self._in_flight.clear()
+
         self._client = NexusClient(auth, str(self._organizer.version()), self)
         self._client.rateLimitChanged.connect(self._on_rate_limit)
 
@@ -522,6 +537,98 @@ class UpdateManagerDialog(QDialog):
 
     # -- tree --------------------------------------------------------------
 
+    # -- live download state -----------------------------------------------
+
+    def _watch_downloads(self) -> None:
+        """Follow the downloads this window starts, through MO2's own signals.
+
+        There is no way to unregister these handlers, so every one of them has
+        to survive being called after the window is gone -- hence the guard on
+        `_closed` before anything touches a widget.
+        """
+        try:
+            manager = self._organizer.downloadManager()
+            manager.onDownloadComplete(self._on_download_complete)
+            manager.onDownloadFailed(self._on_download_failed)
+            manager.onDownloadPaused(self._on_download_paused)
+        except Exception:
+            # Losing live updates is a downgrade to "press Rescan", not a
+            # reason to fail opening the window.
+            pass
+
+    def _claim(self, download_id) -> Optional[tuple]:
+        if self._closed:
+            return None
+        try:
+            return self._in_flight.get(int(download_id))
+        except (TypeError, ValueError):
+            return None
+
+    def _on_download_complete(self, download_id) -> None:
+        claimed = self._claim(download_id)
+        if claimed is None:
+            return
+        entry, info = claimed
+        self._in_flight.pop(int(download_id), None)
+
+        path = ""
+        try:
+            path = self._organizer.downloadManager().downloadPath(int(download_id))
+        except Exception:
+            path = ""
+
+        # MO2 writes the meta file immediately before signalling completion
+        # (downloadmanager.cpp:1686), so the archive is ready to install.
+        record = downloads_index.DownloadInfo(
+            entry.mod_id,
+            info.get("file_id"),
+            os.path.basename(path) if path else str(info.get("file_name") or ""),
+            path,
+            path + ".meta" if path else "",
+            str(info.get("version") or ""),
+            downloads_index.READY,
+        )
+        entry.download = record
+        self._downloads[(entry.mod_id, info.get("file_id"))] = record
+        entry.status = ModEntry.DOWNLOADED
+        entry.message = "Just downloaded, not installed."
+        self._schedule_refresh()
+
+    def _on_download_failed(self, download_id) -> None:
+        claimed = self._claim(download_id)
+        if claimed is None:
+            return
+        entry, _ = claimed
+        self._in_flight.pop(int(download_id), None)
+        entry.status = ModEntry.UPDATE
+        entry.message = "Download failed. Check MO2's Downloads tab."
+        self._schedule_refresh()
+
+    def _on_download_paused(self, download_id) -> None:
+        claimed = self._claim(download_id)
+        if claimed is None:
+            return
+        entry, _ = claimed
+        entry.message = "Paused in MO2's Downloads tab."
+        self._schedule_refresh()
+
+    def _schedule_refresh(self) -> None:
+        """Coalesce rebuilds: a batch of downloads finishing lands as one."""
+        if self._refresh_pending or self._closed:
+            return
+        self._refresh_pending = True
+        QTimer.singleShot(250, self._refresh_rows)
+
+    def _refresh_rows(self) -> None:
+        self._refresh_pending = False
+        if self._closed:
+            return
+        try:
+            self._populate(self._entries)
+        except RuntimeError:
+            # The dialog was torn down between the timer and its callback.
+            self._closed = True
+
     def _get_theme(self) -> Theme:
         """Category colours resolved against the tree's real palette.
 
@@ -533,14 +640,37 @@ class UpdateManagerDialog(QDialog):
         return self._theme
 
     def _populate(self, entries: list) -> None:
+        # A rebuild can happen mid-session now that download rows move on their
+        # own, so anything the user has set by hand has to survive it.
+        selected = self._current_entry()
+        ticked = {id(e) for e in self._checked_entries()}
+
         # Building the tree emits itemChanged for every cell; on a large modlist
         # that would re-walk the whole tree thousands of times.
         self._tree.blockSignals(True)
         try:
             self._populate_tree(entries)
+            self._restore_state(selected, ticked)
         finally:
             self._tree.blockSignals(False)
         self._on_item_changed()
+
+    def _restore_state(self, selected, ticked: set) -> None:
+        for item in self._update_items():
+            entry = item.data(0, _ENTRY_ROLE)
+            if entry is not None and id(entry) in ticked:
+                item.setCheckState(0, Qt.CheckState.Checked)
+
+        if selected is None:
+            return
+        for i in range(self._tree.topLevelItemCount()):
+            group = self._tree.topLevelItem(i)
+            for j in range(group.childCount()):
+                child = group.child(j)
+                if child.data(0, _ENTRY_ROLE) is selected:
+                    self._tree.setCurrentItem(child)
+                    self._tree.scrollToItem(child)
+                    return
 
     def _populate_tree(self, entries: list) -> None:
         self._tree.clear()
@@ -1014,17 +1144,30 @@ class UpdateManagerDialog(QDialog):
         if answer != QMessageBox.StandardButton.Yes:
             return
 
-        downloads = self._organizer.downloadManager()
+        manager = self._organizer.downloadManager()
         started, failed = 0, []
         for entry, info in plan:
             file_id = info.get("file_id")
             try:
-                downloads.startDownloadNexusFileForGame(
+                download_id = manager.startDownloadNexusFileForGame(
                     entry.domain, int(entry.mod_id), int(file_id)
                 )
-                started += 1
             except Exception as exc:
                 failed.append(f"{entry.display_name}: {exc}")
+                continue
+
+            # MO2 returns 0 when the download never got queued -- a collection
+            # link, or a file for a different game (downloadmanager.cpp:745).
+            if not download_id:
+                failed.append(f"{entry.display_name}: MO2 did not queue the download.")
+                continue
+
+            started += 1
+            entry.status = ModEntry.DOWNLOADING
+            entry.message = "Queued in MO2's Downloads tab."
+            self._in_flight[int(download_id)] = (entry, info)
+
+        self._populate(self._entries)
 
         if failed:
             QMessageBox.warning(
@@ -1036,12 +1179,16 @@ class UpdateManagerDialog(QDialog):
             )
         else:
             self._status_label.setText(
-                f"Sent {started} download(s) to MO2's Downloads tab."
+                f"Sent {started} download(s) to MO2. This window follows them from here."
             )
 
     # -- teardown ----------------------------------------------------------
 
     def reject(self):
+        # MO2's download handlers cannot be unregistered, so mark the window
+        # gone and let them return early rather than touch dead widgets.
+        self._closed = True
+        self._in_flight.clear()
         if self._client is not None:
             self._client.cancel()
         self._cache.save()
