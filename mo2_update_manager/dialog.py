@@ -57,12 +57,14 @@ from . import downloads as downloads_index
 from ._version import VERSION
 from .cache import ScanCache
 from .credentials import resolve_auth
+from .log import get_logger, log_exception
 from .nexus import NexusClient
 from .scanner import ModEntry, collect_mods
 from .theme import Theme
 from .updater import UpdateScan
 
 _ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.svg")
+_log = get_logger("ui")
 
 _ENTRY_ROLE = Qt.ItemDataRole.UserRole
 
@@ -383,6 +385,7 @@ class UpdateManagerDialog(QDialog):
     def _start_scan(self, deep: bool) -> None:
         auth, note = resolve_auth(str(self._setting("api_key", "")))
         if auth is None:
+            _log.error("Cannot scan: %s", note)
             self._status_label.setText(note)
             self._set_busy(False)
             QMessageBox.warning(self, "No Nexus credentials", note)
@@ -407,6 +410,14 @@ class UpdateManagerDialog(QDialog):
         # Cheap and local: knowing what is already downloaded turns a wasted
         # download into a one-click install.
         self._downloads = downloads_index.scan(self._organizer.downloadsPath())
+        _log.info(
+            "Collected %d Nexus mod(s); %d skipped without a Nexus id, %d disabled "
+            "skipped; %d archive(s) indexed in the downloads folder",
+            len(self._entries),
+            self._skipped_count,
+            self._disabled_count,
+            len(self._downloads),
+        )
 
         self._scan = UpdateScan(self._client, self._cache, self)
         self._scan.progress.connect(self._on_progress)
@@ -489,6 +500,7 @@ class UpdateManagerDialog(QDialog):
         self._rate_label.setText("Nexus API: " + ", ".join(parts) if parts else "")
 
     def _on_scan_failed(self, error: str) -> None:
+        _log.error("Scan failed: %s", error)
         self._set_busy(False)
         self._status_label.setText(error)
         QMessageBox.warning(self, "Nexus check failed", error)
@@ -596,6 +608,7 @@ class UpdateManagerDialog(QDialog):
         self._downloads[(entry.mod_id, info.get("file_id"))] = record
         entry.status = ModEntry.DOWNLOADED
         entry.message = "Just downloaded, not installed."
+        _log.info("Download %s finished: %s", download_id, entry.display_name)
         self._schedule_refresh()
 
     def _on_download_failed(self, download_id) -> None:
@@ -606,6 +619,7 @@ class UpdateManagerDialog(QDialog):
         self._in_flight.pop(int(download_id), None)
         entry.status = ModEntry.UPDATE
         entry.message = "Download failed. Check MO2's Downloads tab."
+        _log.warning("Download %s failed: %s", download_id, entry.display_name)
         self._schedule_refresh()
 
     def _on_download_paused(self, download_id) -> None:
@@ -1049,16 +1063,22 @@ class UpdateManagerDialog(QDialog):
                     entry.download.path, entry.display_name
                 )
             except Exception as exc:
+                log_exception(_log, f"Install failed for {entry.display_name}", exc)
                 failed.append(f"{entry.display_name}: {exc}")
                 continue
             if result is None:
+                _log.info("Install cancelled for %s", entry.display_name)
                 failed.append(f"{entry.display_name}: installation was cancelled.")
                 continue
 
             installed += 1
+            _log.info(
+                "Installed %s from %s", entry.display_name, entry.download.file_name
+            )
             if hide_after:
                 error = downloads_index.hide(entry.download)
                 if error:
+                    _log.warning("Could not hide download: %s", error)
                     failed.append(f"{entry.display_name}: installed, but {error}")
                 else:
                     hidden += 1
@@ -1191,15 +1211,32 @@ class UpdateManagerDialog(QDialog):
                     entry.domain, int(entry.mod_id), int(file_id)
                 )
             except Exception as exc:
+                log_exception(_log, f"Download failed to start for {entry.display_name}", exc)
                 failed.append(f"{entry.display_name}: {exc}")
                 continue
 
             # MO2 returns 0 when the download never got queued -- a collection
             # link, or a file for a different game (downloadmanager.cpp:745).
             if not download_id:
+                _log.warning(
+                    "MO2 declined to queue %s/%s file %s for %s",
+                    entry.domain,
+                    entry.mod_id,
+                    file_id,
+                    entry.display_name,
+                )
                 failed.append(f"{entry.display_name}: MO2 did not queue the download.")
                 continue
 
+            _log.info(
+                "Queued download %s: %s -> %s (%s/%s file %s)",
+                download_id,
+                entry.display_name,
+                info.get("name"),
+                entry.domain,
+                entry.mod_id,
+                file_id,
+            )
             started += 1
             entry.status = ModEntry.DOWNLOADING
             entry.message = "Queued in MO2's Downloads tab."

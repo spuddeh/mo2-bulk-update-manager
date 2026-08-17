@@ -32,6 +32,9 @@ except ImportError:
     )
 
 from ._version import VERSION
+from .log import get_logger
+
+_log = get_logger("nexus")
 
 API_BASE = "https://api.nexusmods.com/v1"
 
@@ -203,6 +206,13 @@ class NexusClient(QObject):
 
         if self._out_of_budget() and self._queue and not self.throttled:
             self.throttled = True
+            _log.warning(
+                "Stopping early: %s Nexus request(s) left this hour (floor %s), "
+                "%d still queued",
+                self.hourly_remaining,
+                self.hourly_floor,
+                len(self._queue),
+            )
             # Fail the rest fast rather than hanging the dialog on a wall of 429s.
             stalled, self._queue = list(self._queue), deque()
             for item in stalled:
@@ -269,9 +279,13 @@ class NexusClient(QObject):
             self._finish(item, Response(True, status, data, "", item.tag))
             return
 
-        self._finish(
-            item, Response(False, status, None, self._describe(status, reply, payload), item.tag)
+        error = self._describe(status, reply, payload)
+        # 404 is an ordinary answer here -- it is how a delisted mod presents --
+        # so it is not worth a warning.
+        (_log.debug if status == 404 else _log.warning)(
+            "Nexus request failed: %s -> %s (%s)", item.tag, status, error
         )
+        self._finish(item, Response(False, status, None, error, item.tag))
 
     def _finish(self, item: _Pending, response: Response) -> None:
         self._completed += 1
@@ -298,6 +312,11 @@ class NexusClient(QObject):
                 setattr(self, attr, value)
                 changed = True
         if changed:
+            _log.debug(
+                "Nexus budget: %s left this hour, %s today",
+                self.hourly_remaining,
+                self.daily_remaining,
+            )
             self.rateLimitChanged.emit(self.hourly_remaining, self.daily_remaining)
 
     @staticmethod

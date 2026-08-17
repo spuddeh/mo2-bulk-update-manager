@@ -31,6 +31,7 @@ except ImportError:
 
 from .downloads import READY as DOWNLOAD_READY
 from .downloads import find as find_download
+from .log import get_logger
 from .scanner import (
     ModEntry,
     is_ignored,
@@ -46,6 +47,8 @@ _PERIODS = (("1d", 1), ("1w", 7), ("1m", 28))
 # Statuses Nexus reports for pages that are no longer normally reachable.
 _GONE_STATUSES = {"removed", "wastebinned", "deleted"}
 _HIDDEN_STATUSES = {"hidden", "under_moderation", "not_published", "publish_with_game"}
+
+_log = get_logger("scan")
 
 
 class UpdateScan(QObject):
@@ -71,6 +74,9 @@ class UpdateScan(QObject):
         self._total_pages = 0
         self._notes: list[str] = []
         self._candidates: list[tuple[str, int]] = []
+        # Pages that only need their status re-checked, not their file list:
+        # the rotating delisting sweep already has the files cached.
+        self._page_only: set = set()
         self._replies: dict = {}
         self._downloads: dict = {}
         self.user: dict = {}
@@ -90,8 +96,17 @@ class UpdateScan(QObject):
         self._recheck_days = max(1, recheck_days)
         self._notes = []
         self._by_key = {}
+        self._page_only = set()
         for entry in entries:
             self._by_key.setdefault(entry.key, []).append(entry)
+
+        _log.info(
+            "%s scan starting: %d mod(s) across %d Nexus page(s), %d game(s)",
+            "Deep" if deep else "Quick",
+            len(entries),
+            len(self._by_key),
+            len({e.domain for e in entries}),
+        )
 
         if not entries:
             self.finished.emit([], "No Nexus-backed mods found in this profile.")
@@ -190,6 +205,10 @@ class UpdateScan(QObject):
         stale.sort(reverse=True)
         rotated = [key for _, key in stale[: self._max_recheck]]
         self._candidates.extend(rotated)
+        # These are only being looked at in case they were delisted, and that
+        # answer is on the page. Their file list is already cached, so asking
+        # for it again would double the cost of the sweep for nothing.
+        self._page_only.update(rotated)
         if len(stale) > len(rotated):
             self._notes.append(
                 f"{domain}: {len(stale) - len(rotated)} mod(s) are due a "
@@ -208,10 +227,18 @@ class UpdateScan(QObject):
 
     def _begin_page_lookups(self) -> None:
         self._candidates = sorted(set(self._candidates))
+        self._page_only &= set(self._candidates)
         self._total_pages = len(self._candidates)
         self._done_pages = 0
-        self._pending_requests = self._total_pages * 2
+
+        # A page normally costs two requests: the page itself for availability,
+        # and its file list. A page being re-checked only for delisting already
+        # has its files cached, so it costs one.
+        self._pending_requests = (self._total_pages * 2) - len(self._page_only)
         self._replies = {key: {} for key in self._candidates}
+        for key in self._page_only:
+            self._replies[key]["files"] = self._cache.get_files(*key) or []
+            self._replies[key]["files_done"] = True
 
         # Everything not queried keeps whatever the cache last knew.
         queried = set(self._candidates)
@@ -227,13 +254,23 @@ class UpdateScan(QObject):
             self._complete()
             return
 
+        _log.info(
+            "Querying %d Nexus page(s) in %d request(s); %d page(s) need only a "
+            "delisting re-check, %d page(s) came from the cache",
+            self._total_pages,
+            self._pending_requests,
+            len(self._page_only),
+            len(self._by_key) - self._total_pages,
+        )
         self.progress.emit(
             f"Checking {self._total_pages} Nexus page(s)...", 0, self._total_pages
         )
         self._client.reset_progress()
-        for domain, mod_id in self._candidates:
+        for key in self._candidates:
+            domain, mod_id = key
             self._client.mod_info(domain, mod_id, self._on_mod_info)
-            self._client.mod_files(domain, mod_id, self._on_mod_files)
+            if key not in self._page_only:
+                self._client.mod_files(domain, mod_id, self._on_mod_files)
 
     def _on_mod_info(self, response) -> None:
         _, domain, mod_id = response.tag
@@ -514,7 +551,32 @@ class UpdateScan(QObject):
     def _complete(self) -> None:
         error = self._cache.save()
         if error:
+            _log.error("%s", error)
             self._notes.append(error)
+
+        counts: dict = {}
+        for entry in self._entries:
+            counts[entry.status] = counts.get(entry.status, 0) + 1
+        _log.info(
+            "Scan finished: %s%s",
+            ", ".join(f"{n} {status}" for status, n in sorted(counts.items())) or "nothing",
+            f"; {sum(1 for e in self._entries if e.page_note)} on a page that moved on"
+            if any(e.page_note for e in self._entries)
+            else "",
+        )
+        for entry in self._entries:
+            if entry.status != ModEntry.CURRENT:
+                _log.debug(
+                    "%s [%s/%s] %s: installed %s, line %r, latest %s%s",
+                    entry.status,
+                    entry.domain,
+                    entry.mod_id,
+                    entry.display_name,
+                    entry.installed_version or "?",
+                    entry.file_line or "unmatched",
+                    entry.latest_version or "?",
+                    f" ({entry.message})" if entry.message else "",
+                )
 
         pages = len(self._by_key)
         if self._total_pages < pages and not self._deep:

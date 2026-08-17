@@ -22,16 +22,32 @@ import urllib.error
 import urllib.request
 
 import importlib.util
+import types
 
-# Load credentials.py directly: importing the package would pull in plugin.py,
-# which needs mobase and PyQt from MO2's embedded interpreter.
+# Load credentials.py under a stand-in package rather than importing the real
+# one: the real __init__ pulls in plugin.py, which needs mobase and PyQt from
+# MO2's embedded interpreter. The stand-in still has to be a package, because
+# the module uses relative imports.
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_spec = importlib.util.spec_from_file_location(
-    "_umd_credentials", os.path.join(_ROOT, "mo2_update_manager", "credentials.py")
-)
-_credentials = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_credentials)
-resolve_auth = _credentials.resolve_auth
+_PKG_DIR = os.path.join(_ROOT, "mo2_update_manager")
+
+_pkg = types.ModuleType("_umd")
+_pkg.__path__ = [_PKG_DIR]
+sys.modules["_umd"] = _pkg
+
+
+def _load(name):
+    spec = importlib.util.spec_from_file_location(
+        f"_umd.{name}", os.path.join(_PKG_DIR, f"{name}.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[f"_umd.{name}"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_load("log")
+resolve_auth = _load("credentials").resolve_auth
 
 API_BASE = "https://api.nexusmods.com/v1"
 

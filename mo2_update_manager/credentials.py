@@ -23,6 +23,10 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import NamedTuple, Optional
 
+from .log import get_logger
+
+_log = get_logger("credentials")
+
 CRED_TYPE_GENERIC = 1
 ERROR_NOT_FOUND = 1168
 
@@ -151,22 +155,29 @@ def resolve_auth(manual_key: str = "") -> tuple[Optional[Auth], str]:
         note_prefix = ""
 
     if token and not expired:
+        _log.info("Using MO2's stored Nexus OAuth token")
         return Auth("oauth", token, "MO2 Nexus login (OAuth)"), note_prefix
 
     legacy = read_credential(APIKEY_CREDENTIAL)
     if legacy:
+        _log.info(
+            "Using MO2's stored Nexus API key (OAuth token %s)",
+            "expired" if token else "absent",
+        )
         note = note_prefix
         if token and expired:
             note += "MO2's OAuth token has expired; using its stored API key instead. "
         return Auth("apikey", legacy.strip(), "MO2 stored API key"), note
 
     if manual_key:
+        _log.info("Using the API key from plugin settings")
         note = note_prefix
         if token and expired:
             note += "MO2's OAuth token has expired; using the API key from plugin settings. "
         return Auth("apikey", manual_key, "API key from plugin settings"), note
 
     if token:
+        _log.warning("Only an expired OAuth token is available; trying it anyway")
         return (
             Auth("oauth", token, "MO2 Nexus login (OAuth, expired)"),
             note_prefix
@@ -174,6 +185,7 @@ def resolve_auth(manual_key: str = "") -> tuple[Optional[Auth], str]:
             "MO2 to refresh it, or paste a personal API key in the plugin settings.",
         )
 
+    _log.error("No Nexus credentials found in the Windows Credential Manager")
     return None, (
         note_prefix
         + "No Nexus credentials found. Log in to Nexus from MO2 (Settings > Nexus), or "
