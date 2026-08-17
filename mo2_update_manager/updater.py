@@ -46,6 +46,7 @@ from .nexus import BATCH_LIMIT, composite_uid
 from .scanner import (
     ModEntry,
     as_file_record,
+    chain_signature,
     choose_chain,
     current_in_chain,
     find_in_chain,
@@ -413,7 +414,7 @@ class UpdateScan(QObject):
                     continue
                 # Resolved on an earlier scan and remembered, so the chain
                 # listing does not have to be repeated.
-                remembered = self._cache.get_mod_chain(*key)
+                remembered = self._cache.get_mod_chain(*key, chain_signature(entry))
                 if remembered:
                     entry.chain_id, entry.file_line = remembered
                 else:
@@ -451,7 +452,11 @@ class UpdateScan(QObject):
                     entry.chain_id = str(chosen.get("id") or "")
                     entry.file_line = str(chosen.get("name") or "")
                     self._cache.put_mod_chain(
-                        entry.domain, entry.mod_id, entry.chain_id, entry.file_line
+                        entry.domain,
+                        entry.mod_id,
+                        chain_signature(entry),
+                        entry.chain_id,
+                        entry.file_line,
                     )
                 else:
                     _log.debug(

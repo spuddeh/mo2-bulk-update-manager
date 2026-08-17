@@ -27,7 +27,7 @@ SCHEMA_VERSION = 3
 # Bumped whenever the rule for choosing a mod's chain changes, so answers it
 # produced are dropped without discarding the chain contents and installed-file
 # resolutions, which are expensive and still correct.
-CHAIN_MATCH_REVISION = 2
+CHAIN_MATCH_REVISION = 3
 
 # Fields worth keeping from each v3 chain version. `game_scoped_id` is the
 # legacy file id, which is what MO2 records and what downloads are keyed on.
@@ -57,6 +57,10 @@ class ScanCache:
         self._chains: dict[str, dict] = {}
         # Installed file id -> the chain and position it resolved to.
         self._installed: dict[str, dict] = {}
+        # Chain choices made for mods with no recorded file id, keyed by the
+        # evidence used rather than by the page -- several MO2 mods can share
+        # one page and land on different chains.
+        self._mod_chains: dict[str, dict] = {}
         self._dirty = False
         self._load()
 
@@ -76,10 +80,12 @@ class ScanCache:
         self._games = raw.get("games") or {}
         self._chains = raw.get("chains") or {}
         self._installed = raw.get("installed") or {}
+        self._mod_chains = raw.get("mod_chains") or {}
 
         if raw.get("chain_match") != CHAIN_MATCH_REVISION:
             # The rule for picking a mod's chain has changed, so any chain
             # chosen by the old one has to go. Everything else survives.
+            self._mod_chains = {}
             for record in self._mods.values():
                 record.pop("chain", None)
                 record.pop("chain_name", None)
@@ -96,6 +102,7 @@ class ScanCache:
             "games": self._games,
             "chains": self._chains,
             "installed": self._installed,
+            "mod_chains": self._mod_chains,
         }
         try:
             os.makedirs(os.path.dirname(self._path), exist_ok=True)
@@ -113,6 +120,7 @@ class ScanCache:
         self._games = {}
         self._chains = {}
         self._installed = {}
+        self._mod_chains = {}
         self._dirty = True
 
     # -- per-mod records ---------------------------------------------------
@@ -214,23 +222,27 @@ class ScanCache:
             return float("inf")
         return max(0.0, (time.time() - record.get("checked", 0)) / 86400.0)
 
-    def put_mod_chain(self, domain: str, mod_id: int, chain_id: str, name: str) -> None:
+    def put_mod_chain(
+        self, domain: str, mod_id: int, signature: str, chain_id: str, name: str
+    ) -> None:
         """Remember the chain a mod resolved to when it had no file id to use.
 
-        Without this the chain listing has to be repeated on every scan, for
-        every mod MO2 never recorded an installed file for -- 26 of 543 on one
-        real profile.
+        Keyed on the evidence that produced the answer, not on the mod page:
+        page 9643 hosts LaserSightDots_Enabled and its BulletFollowsDot
+        variant, and two MO2 mods installed from it must not share one entry --
+        keying by page let whichever was seen last overwrite the other.
         """
-        record = self._mods.setdefault(self._key(domain, mod_id), {})
-        record["chain"] = str(chain_id)
-        record["chain_name"] = name
+        self._mod_chains[f"{domain}/{mod_id}/{signature}"] = {
+            "chain": str(chain_id),
+            "name": name,
+        }
         self._dirty = True
 
-    def get_mod_chain(self, domain: str, mod_id: int) -> Optional[tuple]:
-        record = self.get(domain, mod_id)
+    def get_mod_chain(self, domain: str, mod_id: int, signature: str) -> Optional[tuple]:
+        record = self._mod_chains.get(f"{domain}/{mod_id}/{signature}")
         if not record or not record.get("chain"):
             return None
-        return record["chain"], record.get("chain_name") or ""
+        return record["chain"], record.get("name") or ""
 
     def put_status(self, domain: str, mod_id: int, status: str, name: str) -> None:
         record = self._mods.setdefault(self._key(domain, mod_id), {})

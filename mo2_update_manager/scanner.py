@@ -631,6 +631,15 @@ def _numeric_tuple(text: str) -> Optional[tuple]:
     return tuple(numbers)
 
 
+def chain_signature(entry: ModEntry) -> str:
+    """What a chain choice for this mod was actually based on.
+
+    Used as the cache key, so remembering an answer cannot outlive the evidence
+    that produced it, and two mods from the same page keep separate answers.
+    """
+    return entry.installation_file or entry.display_name or ""
+
+
 def choose_chain(entry: ModEntry, chains: list) -> Optional[dict]:
     """Pick the chain a mod came from when its file id was never recorded.
 
