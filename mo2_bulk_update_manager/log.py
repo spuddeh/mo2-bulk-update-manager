@@ -34,9 +34,9 @@ from __future__ import annotations
 import logging
 import traceback
 
-ROOT_NAME = "mo2_update_manager"
+ROOT_NAME = "mo2_bulk_update_manager"
 
-PREFIX = "[UpdateManager]"
+PREFIX = "[BulkUpdateManager]"
 
 
 def get_logger(name: str = "") -> logging.Logger:

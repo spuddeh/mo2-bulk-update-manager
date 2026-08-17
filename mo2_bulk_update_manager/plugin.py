@@ -8,19 +8,19 @@ except ImportError:
 import mobase
 
 from ._version import VERSION
-from .dialog import DEFAULT_FILE_CATEGORIES, UpdateManagerDialog
+from .dialog import DEFAULT_FILE_CATEGORIES, BulkUpdateManagerDialog
 from .log import get_logger, tag
 
 _log = get_logger()
 
-PLUGIN_NAME = "Update Manager"
+PLUGIN_NAME = "MO2 Bulk Update Manager"
 
 # MO2 ships Qt's SVG image format plugin (dlls/imageformats/qsvg.dll), so QIcon
 # renders this directly at whatever size the menu asks for.
 ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.svg")
 
 
-class UpdateManagerPlugin(mobase.IPluginTool):
+class BulkUpdateManagerPlugin(mobase.IPluginTool):
 
     def __init__(self):
         super().__init__()
@@ -122,9 +122,9 @@ class UpdateManagerPlugin(mobase.IPluginTool):
         game = self._organizer.managedGame()
         _log.info(
             tag(
-                f"Update Manager {VERSION} opening (MO2 {self._organizer.version()}, "
+                f"{PLUGIN_NAME} {VERSION} opening (MO2 {self._organizer.version()}, "
                 f"game {game.gameShortName() if game else 'unknown'})"
             )
         )
-        dialog = UpdateManagerDialog(self._organizer, PLUGIN_NAME, self._parent)
+        dialog = BulkUpdateManagerDialog(self._organizer, PLUGIN_NAME, self._parent)
         dialog.exec()

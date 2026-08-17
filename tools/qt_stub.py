@@ -1,6 +1,6 @@
 """Enough of PyQt and mobase to import the plugin's modules outside MO2.
 
-Call ``install()`` before importing anything from ``mo2_update_manager``. Used
+Call ``install()`` before importing anything from ``mo2_bulk_update_manager``. Used
 by ``test_overrides.py``; ``umd_debug.py`` does not need it, because the Nexus
 half of the plugin already runs on the standard library alone.
 

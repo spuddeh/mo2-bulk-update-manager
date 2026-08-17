@@ -235,6 +235,14 @@ def nexus_domain(organizer: mobase.IOrganizer, game_name: str) -> str:
     return _FALLBACK_DOMAINS.get(game_name.lower(), "")
 
 
+# Names this plugin has answered to before. MO2 files a mod's plugin settings
+# under the plugin's display name, so renaming it would strand every note and
+# every ignore override already written into a meta.ini. Read-only: the next
+# time the user edits one, it is written back under the current name and the
+# old group stops being consulted.
+_LEGACY_PLUGIN_NAMES = ("Update Manager",)
+
+
 def read_overrides(mod, plugin_name: str) -> dict:
     """Everything this plugin has stored on a mod, in one call.
 
@@ -244,10 +252,14 @@ def read_overrides(mod, plugin_name: str) -> dict:
     """
     if not plugin_name:
         return {}
-    try:
-        return dict(mod.pluginSettings(plugin_name) or {})
-    except Exception:
-        return {}
+    for name in (plugin_name,) + _LEGACY_PLUGIN_NAMES:
+        try:
+            settings = dict(mod.pluginSettings(name) or {})
+        except Exception:
+            continue
+        if settings:
+            return settings
+    return {}
 
 
 def collect_mods(

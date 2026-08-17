@@ -1,4 +1,4 @@
-# Update Manager (MO2 plugin)
+# MO2 Bulk Update Manager
 
 **Note:** This plugin was built with assistance from an LLM (Claude). The code has been reviewed and the Nexus-facing half tested against the live API, but keep that in mind.
 
@@ -31,17 +31,21 @@ MO2 can tell you a mod has an update, but on a large modlist you have to force t
 
 ## Installation
 
-Copy the `mo2_update_manager/` folder into your MO2 `plugins/` directory:
+Copy the `mo2_bulk_update_manager/` folder into your MO2 `plugins/` directory:
 
 ```text
-<MO2 install>\plugins\mo2_update_manager\
+<MO2 install>\plugins\mo2_bulk_update_manager\
 ```
 
-Restart MO2. The tool appears under **Tools > Update Manager**.
+Restart MO2. The tool appears under **Tools > MO2 Bulk Update Manager**.
+
+**Upgrading from a folder called `mo2_update_manager`?** Delete it. MO2 loads every plugin folder it finds, so leaving both installs the plugin twice. The tool was called *Update Manager* until 2026-08-18, when the name turned out to collide with an unrelated MO2 plugin.
+
+That display name is also the key MO2 files plugin settings under — including the per-mod notes and ignore overrides this plugin writes into each mod's `meta.ini` — so the old name is still read where the new one has nothing yet, and the on-disk scan cache is adopted rather than rebuilt. Nothing is deleted on the strength of a rename. The plugin's own settings under **Settings > Plugins** do reset to their defaults, because MO2 only exposes settings for a plugin that is currently loaded; re-set them there if you had changed any.
 
 ## Usage
 
-1. Open **Tools > Update Manager**. A quick scan starts automatically.
+1. Open **Tools > MO2 Bulk Update Manager**. A quick scan starts automatically.
 2. Mods are grouped by outcome (see the table below). Type in the **Filter** box to narrow the list to one mod.
 3. Click a mod to read its changelog and file list. The file that will be downloaded is marked ✓, the one you have installed is marked •; pick a different one with **Download this file instead**. Old and archived uploads are hidden — the World Builder page drops from twelve files to three — and **Show every file** brings them back for that session. The file you have and the one queued for download are never hidden, whatever category they sit in.
 4. Tick what you want, then **Download selected** or **Install selected**.
@@ -215,7 +219,8 @@ Nothing is written to the credential store, and the token is never logged or dis
 - **Scanning is batched, not per-mod.** Page status and installed-file lookups go out in batch requests; only update chains are fetched individually, and those are cached, so a chain that has not changed costs nothing on the next scan. A 1071-mod profile with 908 pages settles in around six requests.
 - **The Files tab is v1 and is not cached.** File size, description and per-file changelog have no v3 equivalent, so opening a mod costs two requests each time. Classification never touches them.
 - **A page that has moved past your file is no longer flagged.** Comparing your file against the *page* version needed a page version, and v3 chains do not carry one. It used to be an annotation on an up-to-date row; the case it caught — you have the newest of an optional file while the page's main file has moved on — is real but no longer detected.
-- **The cache is shared** across MO2 instances on the same install — it lives in `plugins/data/update_manager_cache.json`. Delete that file to force a clean baseline.
+- **Installing something re-scans immediately, and MO2's meta.ini has not caught up.** `[installedFiles]` is set in memory when MO2 installs a mod and flushed to disk a moment later, while the plugin reads that file directly — there is no accessor for it. The rescan starts a millisecond after `installMod` returns and loses the race, so a mod that was just correctly updated looks like one MO2 never recorded a file id for. On a page hosting a single download it resolves anyway; on a page hosting two — *Cyberpunk Ultra Plus* and *Ultra Skin* share page 10490 — it landed in **Not checked** until the next scan. No timing fixes that, so the window instead remembers the file id it asked MO2 to install and uses it until the disk copy agrees.
+- **The cache is shared** across MO2 instances on the same install — it lives in `plugins/data/bulk_update_manager_cache.json`. Delete that file to force a clean baseline.
 - **Rate limits** are read from Nexus' own `x-rl-*` response headers and shown in the window. The scan stops early rather than running you out of requests.
 - **Download progress comes from MO2, not from polling.** `IDownloadManager` exposes `onDownloadComplete` / `onDownloadFailed` / `onDownloadPaused`, and the id returned by `startDownloadNexusFileForGame` is the same one those callbacks report. Note that MO2 returns `0` when it declines to queue a download at all — a collection link, or a file for a different game (`downloadmanager.cpp:745`). Those handlers cannot be unregistered, so they check that the window is still open before touching anything.
 - **"Hide downloads after installation" is honoured.** MO2 applies that setting itself only on its own Downloads-tab install path (`organizercore.cpp:911`); the archive install that plugins get marks the download installed but never hides it. So when the setting is on, the plugin writes the same `removed=true` flag MO2 writes (`downloadmanager.cpp:910`), touching that one line and nothing else in the meta file.

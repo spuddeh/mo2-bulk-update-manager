@@ -29,7 +29,7 @@ import types
 # MO2's embedded interpreter. The stand-in still has to be a package, because
 # the module uses relative imports.
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_PKG_DIR = os.path.join(_ROOT, "mo2_update_manager")
+_PKG_DIR = os.path.join(_ROOT, "mo2_bulk_update_manager")
 
 _pkg = types.ModuleType("_umd")
 _pkg.__path__ = [_PKG_DIR]
@@ -68,7 +68,7 @@ def _get(path: str, absolute: str = ""):
     request.add_header("Application-Name", "MO2")
     request.add_header("Application-Version", "2.5.3")
     request.add_header("Protocol-Version", "1.0.0")
-    request.add_header("User-Agent", "MO2-UpdateManager-debug")
+    request.add_header("User-Agent", "MO2-BulkUpdateManager-debug")
     auth.apply_to(lambda name, value: request.add_header(
         name.decode("ascii"), value.decode("utf-8")
     ))

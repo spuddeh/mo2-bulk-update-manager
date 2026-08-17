@@ -15,7 +15,12 @@ import os
 import time
 from typing import Optional
 
-CACHE_FILENAME = "update_manager_cache.json"
+CACHE_FILENAME = "bulk_update_manager_cache.json"
+
+# What the file was called before the plugin was renamed. Read once if the
+# current name is not there yet, so a rename does not cost a full rebuild --
+# on a 900-page profile that is a real chunk of the hourly API budget.
+LEGACY_CACHE_FILENAMES = ("update_manager_cache.json",)
 
 # 2: added the per-page file list, needed to compare file lines rather than
 #    page versions.
@@ -46,6 +51,7 @@ _VERSION_FIELDS = (
 class ScanCache:
     def __init__(self, directory: str):
         self._path = os.path.join(directory, CACHE_FILENAME)
+        self._directory = directory
         self._mods: dict[str, dict] = {}
         self._games: dict[str, dict] = {}
         # v3 update chains, keyed by chain id, shared across every mod that
@@ -63,10 +69,17 @@ class ScanCache:
     # -- persistence -------------------------------------------------------
 
     def _load(self) -> None:
-        try:
-            with open(self._path, "r", encoding="utf-8") as handle:
-                raw = json.load(handle)
-        except (OSError, ValueError):
+        raw = self._read(self._path)
+        if raw is None:
+            for legacy in LEGACY_CACHE_FILENAMES:
+                raw = self._read(os.path.join(self._directory, legacy))
+                if raw is not None:
+                    # Adopted, not moved: the old file is left where it is, and
+                    # the next save writes the current name. Nothing is deleted
+                    # on the strength of a rename.
+                    self._dirty = True
+                    break
+        if raw is None:
             return
 
         if raw.get("schema") != SCHEMA_VERSION:
@@ -86,6 +99,14 @@ class ScanCache:
                 record.pop("chain", None)
                 record.pop("chain_name", None)
             self._dirty = True
+
+    @staticmethod
+    def _read(path: str) -> Optional[dict]:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except (OSError, ValueError):
+            return None
 
     def save(self) -> Optional[str]:
         """Write the cache back. Returns an error string on failure."""

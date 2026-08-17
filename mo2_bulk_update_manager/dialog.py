@@ -1,4 +1,4 @@
-"""The Update Manager window."""
+"""The Bulk Update Manager window."""
 
 from __future__ import annotations
 
@@ -216,7 +216,7 @@ def _size(kb) -> str:
     return f"{kb:.0f} KB"
 
 
-class UpdateManagerDialog(QDialog):
+class BulkUpdateManagerDialog(QDialog):
     def __init__(self, organizer: mobase.IOrganizer, plugin_name: str, parent=None):
         super().__init__(parent)
         self._organizer = organizer
@@ -243,8 +243,11 @@ class UpdateManagerDialog(QDialog):
         # copy of every meta.ini, so touching one again would hand the stale
         # value back -- see _write_back_versions.
         self._unignored: set = set()
+        # mod name -> the Nexus file id this window just installed into it.
+        # See _seed_installed_ids.
+        self._just_installed: dict = {}
 
-        self.setWindowTitle(f"Update Manager v{VERSION}")
+        self.setWindowTitle(f"Bulk Update Manager v{VERSION}")
         if os.path.exists(_ICON_PATH):
             self.setWindowIcon(QIcon(_ICON_PATH))
         self.setMinimumSize(1040, 640)
@@ -455,6 +458,7 @@ class UpdateManagerDialog(QDialog):
             include_disabled=self._flag("check_disabled_mods", True),
         )
         self._skipped_count = len(skipped)
+        self._seed_installed_ids()
         for entry in self._entries:
             if entry.internal_name in self._unignored:
                 # MO2 answers `ignoredVersion()` from the copy it read at
@@ -491,6 +495,42 @@ class UpdateManagerDialog(QDialog):
             recheck_days=int(self._setting("recheck_days", 30)),
             downloads=self._downloads,
         )
+
+    def _seed_installed_ids(self) -> None:
+        """Tell the scan which file this window just installed, ahead of disk.
+
+        Installing triggers a rescan, and `read_installed_file_ids` reads the
+        mod's meta.ini off disk -- but MO2 has only set `[installedFiles]` in
+        memory at that point and flushes it a moment later. The rescan starts a
+        millisecond after `installMod` returns and loses that race, so the mod
+        looks like one MO2 never recorded a file id for. On a page hosting one
+        chain that resolves anyway; on a page hosting two -- Cyberpunk Ultra
+        Plus and Ultra Skin share page 10490 -- there is nothing solid left to
+        pick with, and a mod that was just correctly updated lands in "Not
+        checked" until the next scan.
+
+        No timing is needed to fix it. This window chose the file id it asked
+        MO2 to download and install, so it can simply say so. The record is
+        dropped once the disk copy agrees.
+        """
+        if not self._just_installed:
+            return
+        for entry in self._entries:
+            file_id = self._just_installed.get(entry.internal_name)
+            if not file_id:
+                continue
+            if file_id in entry.installed_file_ids:
+                self._just_installed.pop(entry.internal_name, None)
+                continue
+            # First, because `find_in_chain` takes the first id that matches
+            # and a stale entry left on disk would otherwise win.
+            entry.installed_file_ids.insert(0, int(file_id))
+            _log.info(
+                tag(
+                    f"MO2 has not written {entry.display_name}'s meta.ini yet; "
+                    f"using file {file_id} from this session's install"
+                )
+            )
 
     def _on_identified(self, user: dict) -> None:
         name = NexusClient.user_name(user)
@@ -1510,6 +1550,17 @@ class UpdateManagerDialog(QDialog):
                 continue
 
             installed += 1
+            # Remembered because the rescan below reads meta.ini off disk and
+            # MO2 has not written this file id there yet. See _seed_installed_ids.
+            # Keyed on the mod MO2 says it created, not on the row's own name:
+            # its installer lets the user rename, and the rescan will find it
+            # under whatever name it ended up with.
+            if entry.download.file_id:
+                try:
+                    name = result.name() or entry.internal_name
+                except Exception:
+                    name = entry.internal_name
+                self._just_installed[name] = int(entry.download.file_id)
             _log.info(
                 tag(f"Installed {entry.display_name} from {entry.download.file_name}")
             )

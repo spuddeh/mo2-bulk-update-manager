@@ -325,7 +325,7 @@ class NexusClient(QObject):
         request.setRawHeader(b"Protocol-Version", b"1.0.0")
         request.setRawHeader(
             b"User-Agent",
-            f"MO2-UpdateManager/{VERSION} (MO2 {self._app_version})".encode("utf-8"),
+            f"MO2-BulkUpdateManager/{VERSION} (MO2 {self._app_version})".encode("utf-8"),
         )
         self._auth.apply_to(request.setRawHeader)
 
