@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import os
+import re
 import time
 from typing import Optional
 
@@ -110,6 +111,42 @@ _SUPERSEDED = ("OLD_VERSION", "ARCHIVED")
 # Every category Nexus uses, and which of them are worth listing by default.
 _ALL_CATEGORIES = ("MAIN", "UPDATE", "OPTIONAL", "MISCELLANEOUS", "OLD_VERSION", "ARCHIVED")
 DEFAULT_FILE_CATEGORIES = "MAIN,UPDATE,OPTIONAL,MISCELLANEOUS"
+
+
+# Nexus fields named "_html" are not reliably HTML. `changelog_html` on a file
+# record is frequently plain text with newline separators, and a QTextBrowser
+# collapses those into one paragraph -- which is how a tidy bullet list on the
+# website arrives here as a wall of text.
+_HTML_TAG = re.compile(r"<\s*(br|p|ul|ol|li|b|i|em|strong|a|div|span|h[1-6])\b", re.I)
+
+
+def _split_lines(text: str) -> list:
+    """Break a value into display lines, whether it is HTML or plain text."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    if _HTML_TAG.search(text):
+        # Real markup: hand it over intact rather than second-guessing it.
+        return [text]
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _as_paragraph(text: str) -> str:
+    lines = _split_lines(text)
+    if not lines:
+        return ""
+    if len(lines) == 1 and _HTML_TAG.search(lines[0]):
+        return lines[0]
+    return "<p>" + "<br>".join(html.escape(line) for line in lines) + "</p>"
+
+
+def _as_list(text: str) -> str:
+    lines = _split_lines(text)
+    if not lines:
+        return ""
+    if len(lines) == 1:
+        return lines[0] if _HTML_TAG.search(lines[0]) else f"<p>{html.escape(lines[0])}</p>"
+    return "<ul>" + "".join(f"<li>{html.escape(line)}</li>" for line in lines) + "</ul>"
 
 
 def _make_scrollable(tree) -> None:
@@ -705,7 +742,12 @@ class UpdateManagerDialog(QDialog):
             newer = _is_after(installed, version)
             heading = html.escape(version or "Notes")
             marker = f" <span style='color:{accent}'>(new)</span>" if newer else ""
-            items = "".join(f"<li>{html.escape(str(line))}</li>" for line in lines)
+            # An entry can itself be a multi-line block rather than one bullet.
+            entries = [part for line in lines for part in _split_lines(str(line))]
+            items = "".join(
+                f"<li>{part if _HTML_TAG.search(part) else html.escape(part)}</li>"
+                for part in entries
+            )
             blocks.append(f"<h3>{heading}{marker}</h3><ul>{items}</ul>")
 
         self._changelog_view.setHtml("".join(blocks))
@@ -781,11 +823,11 @@ class UpdateManagerDialog(QDialog):
             self._use_file_btn.setEnabled(False)
             return
         info = item.data(0, _ENTRY_ROLE) or {}
-        description = str(info.get("description") or "").strip()
-        changelog = str(info.get("changelog_html") or "").strip()
         parts = []
+        description = _as_paragraph(str(info.get("description") or ""))
         if description:
-            parts.append(f"<p>{description}</p>")
+            parts.append(description)
+        changelog = _as_list(str(info.get("changelog_html") or ""))
         if changelog:
             parts.append(f"<h4>File changelog</h4>{changelog}")
         self._file_desc.setHtml(

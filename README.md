@@ -105,13 +105,22 @@ Pinning works in three steps, best first:
 2. **The installed version**, matched against each upload's own version.
 3. **The installation archive name.** Nexus file names are a prefix of the download filename; the longest match wins, so *Window Utils Showcase* beats *Window Utils*.
 
+Step 1 is unavailable more often than you would expect — 26 of 543 mods in a real Starfield profile carry no `[installedFiles]` entry, having been installed before MO2 recorded one. Any tie left after steps 2 and 3 is broken toward the more plausible file: still current, then the page's primary upload, then a main file, then newest.
+
 If none match, the plugin falls back to the page version and says so in the Notes column.
 
 Some authors put the version *in* the file name — *World Builder 1.0.0*, *World Builder 1.0.81* — which would make every upload its own one-member line and hide the update entirely. Version tokens are therefore stripped when deriving a line's identity, carefully enough that a *4K Texture Pack* keeps its name.
 
 The **File** column shows the file line whenever it differs from the MO2 mod name. In the Files tab, `•` marks the file you currently have installed and `✓` marks the one that will be downloaded.
 
-A newer upload in your line that carries the *same* version number is still reported as an update, flagged "Newer upload with the same version number" — that is usually a silent re-upload or hotfix.
+A different file at the *same* version is **not** treated as an update. It once was, on the theory that it meant a silent re-upload; across a 543-mod Starfield list that fired four times and was wrong every time — a main file beside a miscellaneous one, an optional 1k texture pack beside the full-size main, an archived copy of the very file already installed. Those are alternatives, not successors.
+
+For the same reason, a file line is only widened past an exact name match when doing so leaves **at most one still-current upload**. Authors who name each release after its version (*World Builder 1.0.0* → *1.0.81*) need the widening; authors who name *variants* that way do not. The tell is several simultaneously-current members:
+
+- *Simply Faster Ladders* offers 125 / 150 / 175 / 200 Percent as four current MAIN files. You install one.
+- *Starfield HD Overhaul* hosts eighteen parts on one page, each its own MAIN file at its own version. The page reads 3.14 because part 18 does; part 01 at 3.08 is perfectly current.
+
+Within a line, a successor also has to share the installed file's category — a main file is not the successor of an optional one just because it is newer. That preference is dropped once your file is marked `OLD_VERSION`, since every superseded upload ends up in that category whatever it started as.
 
 ## How it authenticates
 

@@ -368,15 +368,18 @@ class UpdateScan(QObject):
             if entry.picked_file_id is None:
                 entry.picked_file_id = latest.get("file_id")
 
-            if installed.get("file_id") != latest.get("file_id"):
+            if installed.get("file_id") != latest.get("file_id") and is_newer(
+                entry.installed_version, entry.latest_version
+            ):
+                # A different file id at the *same* version is not an update.
+                # It used to be reported as "newer upload with the same version
+                # number", on the theory that it meant a silent re-upload. On a
+                # 543-mod list that fired four times and was wrong every time:
+                # a main file beside a miscellaneous one, an optional 1k
+                # texture pack beside the full-size main, an archived copy of
+                # the file already installed. Alternatives, not successors.
                 entry.status = ModEntry.UPDATE
-                entry.message = (
-                    ""
-                    if is_newer(entry.installed_version, entry.latest_version)
-                    # A newer upload whose version string is not higher: a
-                    # re-upload or a silent hotfix. Still worth surfacing.
-                    else "Newer upload with the same version number."
-                )
+                entry.message = ""
             elif self._page_moved_on(installed, page):
                 # This file line is current, but the page has moved past it --
                 # typically an optional add-on for a main file that has since

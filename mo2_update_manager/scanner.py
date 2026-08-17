@@ -290,25 +290,88 @@ def resolve_file_line(entry: ModEntry, files: list) -> tuple[Optional[dict], Opt
     if installed is None:
         return None, None
 
-    line = line_key(str(installed.get("name") or ""))
-    same_line = [f for f in files if line_key(str(f.get("name") or "")) == line]
+    return installed, _newest_in_line(installed, _line_members(installed, files))
 
-    # Prefer a current upload; if the whole line has been superseded, the
-    # newest entry in it is still the honest answer.
-    live = [
-        f
-        for f in same_line
-        if str(f.get("category_name") or "").upper() not in _SUPERSEDED
-    ]
-    pool = live or same_line
-    latest = max(pool, key=lambda f: int(f.get("uploaded_timestamp") or 0))
-    return installed, latest
+
+def _superseded(info: dict) -> bool:
+    return str(info.get("category_name") or "").upper() in _SUPERSEDED
+
+
+def _best_candidate(candidates: list) -> dict:
+    """Pick the most plausible file from an ambiguous match.
+
+    A page can carry the same file name at the same version more than once --
+    an archived copy alongside the live one, say. Prefer what a person would:
+    something still current, the page's primary upload, a main file, newest.
+    """
+    return max(
+        candidates,
+        key=lambda f: (
+            0 if _superseded(f) else 1,
+            1 if f.get("is_primary") else 0,
+            1 if str(f.get("category_name") or "").upper() == "MAIN" else 0,
+            int(f.get("uploaded_timestamp") or 0),
+        ),
+    )
+
+
+def _line_members(installed: dict, files: list) -> list:
+    """The uploads that count as the same file line as ``installed``.
+
+    Names are matched exactly first. Widening to the version-stripped key is
+    only safe when it does not merge two files that are *both* still current:
+    an author who names each release after its version produces one live
+    member, while an author who names *variants* that way -- "125 Percent",
+    "150 Percent", "175 Percent" -- produces several, and those are
+    alternatives you pick between, not a sequence you upgrade along.
+    """
+    name = str(installed.get("name") or "")
+    exact = [f for f in files if str(f.get("name") or "") == name]
+
+    key = line_key(name)
+    widened = [f for f in files if line_key(str(f.get("name") or "")) == key]
+    if len(widened) == len(exact):
+        return exact
+
+    live = [f for f in widened if not _superseded(f)]
+    return exact if len(live) > 1 else widened
+
+
+def _newest_in_line(installed: dict, members: list) -> Optional[dict]:
+    """The newest upload in the line, preferring the installed file's category.
+
+    A main file is not the successor of an optional one just because it is
+    newer; they are different products that happen to share a name.
+    """
+    if not members:
+        return None
+
+    live = [f for f in members if not _superseded(f)]
+    if not live:
+        # The whole line has been superseded; its newest entry is still the
+        # honest answer.
+        return max(members, key=lambda f: int(f.get("uploaded_timestamp") or 0))
+
+    # The category preference only applies while the installed file is itself
+    # current. Once Nexus marks it OLD_VERSION its category says nothing about
+    # what it is -- every superseded upload ends up there, whatever it started
+    # as -- and honouring it would hide the main file that replaced it.
+    if not _superseded(installed):
+        category = str(installed.get("category_name") or "").upper()
+        same_kind = [
+            f for f in live if str(f.get("category_name") or "").upper() == category
+        ]
+        if same_kind:
+            live = same_kind
+
+    return max(live, key=lambda f: int(f.get("uploaded_timestamp") or 0))
 
 
 def _match_installed(entry: ModEntry, files: list) -> Optional[dict]:
     by_id = {int(f.get("file_id") or 0): f for f in files}
 
-    # 1. The file id MO2 recorded at install time. Exact, when it is there.
+    # 1. The file id MO2 recorded at install time. Exact, when it is there --
+    #    but a mod installed before MO2 started recording it will have none.
     for file_id in entry.installed_file_ids:
         if file_id in by_id:
             return by_id[file_id]
@@ -320,7 +383,8 @@ def _match_installed(entry: ModEntry, files: list) -> Optional[dict]:
         if len(matches) == 1:
             return matches[0]
         if matches:
-            # Ambiguous: fall through to the archive name to break the tie.
+            # Ambiguous: narrow with the archive name, then break any remaining
+            # tie on plausibility rather than on list order.
             files = matches
 
     # 3. The name of the archive it was installed from. Nexus file names are
@@ -334,7 +398,14 @@ def _match_installed(entry: ModEntry, files: list) -> Optional[dict]:
             if _squash(str(f.get("name") or "")) and _squash(str(f.get("name") or "")) in archive
         ]
         if candidates:
-            return max(candidates, key=lambda f: len(_squash(str(f.get("name") or ""))))
+            longest = max(len(_squash(str(f.get("name") or ""))) for f in candidates)
+            return _best_candidate(
+                [f for f in candidates if len(_squash(str(f.get("name") or ""))) == longest]
+            )
+
+    if files and len(files) < len(by_id):
+        # Narrowed by version but never disambiguated further.
+        return _best_candidate(files)
 
     return None
 
