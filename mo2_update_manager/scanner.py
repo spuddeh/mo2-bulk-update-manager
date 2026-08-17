@@ -195,15 +195,19 @@ def nexus_domain(organizer: mobase.IOrganizer, game_name: str) -> str:
     return _FALLBACK_DOMAINS.get(game_name.lower(), "")
 
 
-def collect_mods(organizer: mobase.IOrganizer) -> tuple[list[ModEntry], list[str]]:
+def collect_mods(
+    organizer: mobase.IOrganizer, include_disabled: bool = True
+) -> tuple[list[ModEntry], list[str], int]:
     """Gather every Nexus-backed mod in the current profile.
 
-    Returns ``(entries, skipped)`` where ``skipped`` names mods that carry no
-    usable Nexus id -- separators, manually built mods, output folders.
+    Returns ``(entries, skipped, disabled)``: mods to check, the names of mods
+    with no usable Nexus id -- separators, hand-built mods, output folders --
+    and how many were left out for being disabled.
     """
     mod_list = organizer.modList()
     entries: list[ModEntry] = []
     skipped: list[str] = []
+    disabled = 0
 
     for name in mod_list.allMods():
         mod = mod_list.getMod(name)
@@ -225,13 +229,20 @@ def collect_mods(organizer: mobase.IOrganizer) -> tuple[list[ModEntry], list[str
             skipped.append(name)
             continue
 
+        enabled = bool(mod_list.state(name) & mobase.ModState.active)
+        if not enabled and not include_disabled:
+            disabled += 1
+            continue
+
         # Several MO2 mods can share one Nexus page -- a main file plus an
         # addon, say. Each keeps its own row and its own file line; the page
         # itself is only queried once (see UpdateScan).
-        entries.append(ModEntry(mod, domain))
+        entry = ModEntry(mod, domain)
+        entry.enabled = enabled
+        entries.append(entry)
 
     entries.sort(key=lambda e: e.display_name.lower())
-    return entries, skipped
+    return entries, skipped, disabled
 
 
 _SUPERSEDED = ("OLD_VERSION", "ARCHIVED")

@@ -85,6 +85,34 @@ class UpdateManagerPlugin(mobase.IPluginTool):
                 "shows its own update flag",
                 True,
             ),
+            mobase.PluginSetting(
+                "check_disabled_mods",
+                "Check mods that are disabled in the current profile. Turning this "
+                "off makes scans faster and shorter on a large modlist",
+                True,
+            ),
+            mobase.PluginSetting(
+                "scan_on_open",
+                "Scan as soon as the window opens. Turn off to open without "
+                "spending Nexus API requests, then press Rescan when you want them",
+                True,
+            ),
+            mobase.PluginSetting(
+                "hide_downloads_after_install",
+                "Hide a download once this window installs it: 'auto' follows MO2's "
+                "own setting, or use 'always' / 'never'",
+                "auto",
+            ),
+            mobase.PluginSetting(
+                "show_up_to_date",
+                "List mods that are up to date",
+                True,
+            ),
+            mobase.PluginSetting(
+                "show_ignored",
+                "List mods whose update you dismissed with MO2's 'Ignore update'",
+                True,
+            ),
         ]
 
     def display(self):

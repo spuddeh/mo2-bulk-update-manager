@@ -129,6 +129,11 @@ Nothing is written to the credential store, and the token is never logged or dis
 | `file_categories` | `MAIN,UPDATE,OPTIONAL,MISCELLANEOUS` | Nexus file categories to list in the Files tab. `OLD_VERSION` and `ARCHIVED` are hidden by default — a long-running mod can carry sixty superseded uploads |
 | `recheck_days` | `30` | During a quick scan, re-verify cached results older than this many days so delistings surface |
 | `write_back_versions` | `true` | Record the newest version on the MO2 mod so the main modlist shows its update flag |
+| `check_disabled_mods` | `true` | Check mods disabled in the current profile. Turning this off shortens both the scan and the list — a typical profile carries a lot of disabled mods you have no intention of updating |
+| `scan_on_open` | `true` | Scan as soon as the window opens. Turn off to open without spending API requests, then press **Rescan** when you want them |
+| `hide_downloads_after_install` | `auto` | Hide a download once this window installs it. `auto` follows MO2's own setting; `always` and `never` override it |
+| `show_up_to_date` | `true` | List mods that are up to date |
+| `show_ignored` | `true` | List mods whose update you dismissed with MO2's *Ignore update* |
 
 ## Notes and limits
 

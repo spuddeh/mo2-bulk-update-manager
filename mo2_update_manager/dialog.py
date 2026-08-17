@@ -170,6 +170,7 @@ class UpdateManagerDialog(QDialog):
         self._cache = ScanCache(organizer.pluginDataPath())
         self._loading_details: set = set()
         self._skipped_count = 0
+        self._disabled_count = 0
         self._account = ""
         self._downloads: dict = {}
         self._theme: Optional[Theme] = None
@@ -179,7 +180,12 @@ class UpdateManagerDialog(QDialog):
             self.setWindowIcon(QIcon(_ICON_PATH))
         self.setMinimumSize(1040, 640)
         self._build_ui()
-        self._start_scan(deep=False)
+        if self._flag("scan_on_open", True):
+            self._start_scan(deep=False)
+        else:
+            self._status_label.setText(
+                "Ready. Press Rescan to check Nexus, or Deep scan for a full sweep."
+            )
 
     # -- construction ------------------------------------------------------
 
@@ -319,6 +325,13 @@ class UpdateManagerDialog(QDialog):
         value = self._organizer.pluginSetting(self._plugin_name, key)
         return fallback if value is None else value
 
+    def _flag(self, key, fallback: bool) -> bool:
+        """A boolean plugin setting, tolerant of MO2 handing it back as text."""
+        value = self._setting(key, fallback)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+
     def _start_scan(self, deep: bool) -> None:
         auth, note = resolve_auth(str(self._setting("api_key", "")))
         if auth is None:
@@ -333,7 +346,9 @@ class UpdateManagerDialog(QDialog):
         self._client = NexusClient(auth, str(self._organizer.version()), self)
         self._client.rateLimitChanged.connect(self._on_rate_limit)
 
-        self._entries, skipped = collect_mods(self._organizer)
+        self._entries, skipped, self._disabled_count = collect_mods(
+            self._organizer, include_disabled=self._flag("check_disabled_mods", True)
+        )
         self._skipped_count = len(skipped)
         # Cheap and local: knowing what is already downloaded turns a wasted
         # download into a one-click install.
@@ -369,7 +384,12 @@ class UpdateManagerDialog(QDialog):
             )
 
     def _confirm_deep_scan(self) -> None:
-        count = len(self._entries) or len(collect_mods(self._organizer)[0])
+        count = len(self._entries) or len(
+            collect_mods(
+                self._organizer,
+                include_disabled=self._flag("check_disabled_mods", True),
+            )[0]
+        )
         budget = ""
         if self._client is not None and self._client.hourly_remaining is not None:
             budget = (
@@ -440,6 +460,8 @@ class UpdateManagerDialog(QDialog):
         summary = ", ".join(f"{n} {label}" for n, label in parts if n) + "."
         if self._skipped_count:
             summary += f" {self._skipped_count} mod(s) have no Nexus id and were skipped."
+        if self._disabled_count:
+            summary += f" {self._disabled_count} disabled mod(s) were skipped."
         if self._account:
             summary = f"[{self._account}]  " + summary
         self._status_label.setText(summary + ("  " + note if note else ""))
@@ -492,7 +514,15 @@ class UpdateManagerDialog(QDialog):
         bold.setBold(True)
         muted = QBrush(theme.muted())
 
+        hidden_groups = set()
+        if not self._flag("show_up_to_date", True):
+            hidden_groups.add(ModEntry.CURRENT)
+        if not self._flag("show_ignored", True):
+            hidden_groups.add(ModEntry.IGNORED)
+
         for status, title in _GROUPS:
+            if status in hidden_groups:
+                continue
             members = [e for e in entries if e.status == status]
             if not members:
                 continue
@@ -832,13 +862,20 @@ class UpdateManagerDialog(QDialog):
             self._start_scan(deep=False)
 
     def _hide_downloads_after_install(self) -> bool:
-        """MO2's own 'hide downloads after installation' preference.
+        """Whether to hide a download once this window installs it.
 
-        MO2 applies this itself only on the Downloads-tab install path
+        MO2 applies its own preference only on the Downloads-tab install path
         (``organizercore.cpp:911``). The archive install that plugins get goes
         through ``installArchive``, which marks the download installed but
-        never hides it -- so read the setting and do it here.
+        never hides it -- so decide here, following MO2 unless the plugin
+        setting overrides it.
         """
+        choice = str(self._setting("hide_downloads_after_install", "auto")).lower()
+        if choice == "always":
+            return True
+        if choice == "never":
+            return False
+
         path = os.path.join(self._organizer.basePath(), "ModOrganizer.ini")
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as handle:
