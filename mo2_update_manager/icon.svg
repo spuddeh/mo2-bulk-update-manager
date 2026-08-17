@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <!-- Deliberately mid-tone colours: MO2's toolbar can be light or dark, and
+       these read against both without a white or black element anywhere. -->
+  <g fill="none" stroke="#4a9eda" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <!-- refresh arc, open at the top right where the arrowhead sits -->
+    <path d="M20.5 12a8.5 8.5 0 1 1-2.6-6.1"/>
+    <path d="M20.9 3.6v4.2h-4.2"/>
+  </g>
+  <!-- download arrow into a tray -->
+  <g fill="none" stroke="#5cb85c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 7.4v6.9"/>
+    <path d="M9 11.6l3 3 3-3"/>
+    <path d="M7.6 17.4h8.8"/>
+  </g>
+</svg>

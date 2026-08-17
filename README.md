@@ -1,0 +1,154 @@
+# Update Manager (MO2 plugin)
+
+**Note:** This plugin was built with assistance from an LLM (Claude). The code has been reviewed and the Nexus-facing half tested against the live API, but keep that in mind.
+
+An MO2 tool that checks every Nexus-backed mod in your profile in one pass, tells you which ones have updates and which ones have been **hidden or removed from Nexus**, shows the changelog and file list side by side, and sends downloads straight to MO2's Downloads tab.
+
+## The Problem
+
+MO2 can tell you a mod has an update, but on a large modlist you have to force the check, wait, and then still open the Nexus page in a browser to get the file. And nothing tells you when a mod you rely on has quietly been pulled from Nexus.
+
+## What it does
+
+- **One request per game, not one per mod.** The scan uses Nexus' `mods/updated` feed, which reports every mod in a game changed in the last day/week/month in a single call. Results are cached on disk, so a routine check on a 500-mod list costs a handful of requests instead of 500.
+- **Compares file lines, not page versions.** See [Multi-file mod pages](#multi-file-mod-pages) — this is why it catches updates MO2's own check misses.
+- **Flags delisted mods.** A mod page that returns 404, or reports `available: false` / a hidden status, is called out separately from ordinary updates.
+- **Knows what you already downloaded.** If the newer archive is sitting in MO2's downloads folder, the mod moves to *Downloaded, waiting to be installed* and the button becomes **Install selected** — no wasted second download.
+- **Respects MO2's ignored updates.** A version you dismissed with MO2's *Ignore update* goes to a collapsed *Ignored* group instead of nagging. A version newer than the one you ignored comes back.
+- **Changelog and file description in the window.** Pick a mod, read what changed and what each file contains, without opening a browser.
+- **Download button.** Sends the chosen file to MO2's download queue via `IDownloadManager`, the same path MO2 uses for an `nxm://` link.
+- **Writes back to MO2.** Newer versions are recorded on the mod, so MO2's own modlist shows its update flag too. Turn this off in the plugin settings if you'd rather it didn't.
+
+## Requirements
+
+- Mod Organizer 2 **2.5.3** or later (developed against 2.5.3beta12)
+- A Nexus account signed in to MO2 (**Settings > Nexus**)
+- Windows — credentials are read from the Windows Credential Manager
+
+**Premium vs free accounts:** Nexus only issues direct download links to Premium accounts. On a free account the scan, changelogs and delisting checks all work; use **Open on Nexus** and click *Mod Manager Download* to get the file.
+
+## Installation
+
+Copy the `mo2_update_manager/` folder into your MO2 `plugins/` directory:
+
+```text
+<MO2 install>\plugins\mo2_update_manager\
+```
+
+Restart MO2. The tool appears under **Tools > Update Manager**.
+
+## Usage
+
+1. Open **Tools > Update Manager**. A quick scan starts automatically.
+2. Mods are grouped by outcome (see the table below).
+3. Click a mod to read its changelog and file list. The file that will be downloaded is marked ✓, the one you have installed is marked •; pick a different one with **Download this file instead**.
+4. Tick what you want, then **Download selected** or **Install selected**.
+5. Downloads land in MO2's Downloads tab.
+
+### The groups
+
+| Group | What it means | What to do |
+| --- | --- | --- |
+| **Downloaded, waiting to be installed** | A newer file for this mod is already in your downloads folder | Tick it and hit **Install selected** |
+| **Updates available** | A newer file exists on Nexus and you don't have it | Tick it and hit **Download selected** |
+| **No longer on Nexus** | The page 404s or reports a removed status | Decide whether to keep the mod |
+| **Hidden or unavailable** | The page exists but is hidden or under moderation | Usually temporary; check back |
+| **Page updated, your file unchanged** | Your exact download is still the newest of its kind, but *something else* on that page is newer | Often fine. See below |
+| **Ignored in MO2** | You used MO2's *Ignore update* on exactly this version | Nothing |
+| **Could not be checked** | The request failed — network, rate limit, or a Nexus error | Rescan later; the reason is in the Notes column |
+| **Not checked** | No result and no cached record for this mod | Rescan. If it persists, run a deep scan |
+| **Up to date** | Nothing newer in your file line | Nothing |
+
+**Page updated, your file unchanged** is the group worth understanding. Say you installed the optional *Collision Mesh Preview* file from the *World Builder* page. That file has only ever been uploaded once, so there is genuinely no update *for it* — but the main World Builder file has moved from 1.0.8 to 1.0.81. MO2's own check flags this as an update (it compares page versions); strictly it is not one. The group exists so the fact is visible without being mixed in with real updates.
+
+### Quick scan vs deep scan
+
+**Rescan** (quick) asks Nexus what changed in each game since your last scan, checks only those mods, and re-verifies a rotating slice of the oldest cached results so delistings still surface over time.
+
+**Deep scan** queries every mod individually. Slower and far more API requests, but it is the only way to catch a mod that was pulled from Nexus long before your last scan. Run it occasionally, or after a long break.
+
+## Multi-file mod pages
+
+A Nexus page is not one download. It can host several unrelated files, each with its own version history — a main file, an addon, a showcase pack — and plenty of authors never bump the *page* version when they update one of them.
+
+Comparing an installed mod against the page version therefore gets two things wrong, and both are common:
+
+| Page | Page version | What is really there |
+| --- | --- | --- |
+| Disable Fake Lights with Path Tracing (16060) | `0.4` | Main file is at **v0.5**. Page version never bumped, so a page-level check says "up to date". |
+| Window Utils (26589) | `1.0.3` | Two separate downloads: *Window Utils* v1.0.0→v1.0.3 and *Window Utils Showcase* v1.0.0b→v1.0.1b. Both installed, both need updates, but they share one page. |
+
+This plugin compares **file lines** instead — the sequence of uploads sharing a file name. Each MO2 mod is pinned to its own line, so both Window Utils mods get their own row and their own correct answer, and the Fake Lights update is found despite the stale page version.
+
+Pinning works in three steps, best first:
+
+1. **The exact Nexus file id.** MO2 records it in the mod's `meta.ini` under `[installedFiles]` as `1\fileid=…`. Unambiguous when present.
+2. **The installed version**, matched against each upload's own version.
+3. **The installation archive name.** Nexus file names are a prefix of the download filename; the longest match wins, so *Window Utils Showcase* beats *Window Utils*.
+
+If none match, the plugin falls back to the page version and says so in the Notes column.
+
+Some authors put the version *in* the file name — *World Builder 1.0.0*, *World Builder 1.0.81* — which would make every upload its own one-member line and hide the update entirely. Version tokens are therefore stripped when deriving a line's identity, carefully enough that a *4K Texture Pack* keeps its name.
+
+The **File** column shows the file line whenever it differs from the MO2 mod name. In the Files tab, `•` marks the file you currently have installed and `✓` marks the one that will be downloaded.
+
+A newer upload in your line that carries the *same* version number is still reported as an update, flagged "Newer upload with the same version number" — that is usually a silent re-upload or hotfix.
+
+## How it authenticates
+
+MO2 stores your Nexus credentials in the Windows Credential Manager. The plugin reads them so there is nothing to set up:
+
+| Credential | Used as |
+| --- | --- |
+| `ModOrganizer2_NEXUS_OAUTH_TOKENS` | `Authorization: Bearer …` (MO2's OAuth login) |
+| `ModOrganizer2_APIKEY` | `apikey: …` (MO2's legacy key, if present) |
+
+If neither is readable or the OAuth token has expired, the plugin falls back to a personal API key you can paste into its settings (from [nexusmods.com/users/myaccount?tab=api](https://www.nexusmods.com/users/myaccount?tab=api)).
+
+Nothing is written to the credential store, and the token is never logged or displayed.
+
+## Settings
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `api_key` | *(empty)* | Fallback personal API key, used only if MO2's own login can't be read |
+| `recheck_days` | `30` | During a quick scan, re-verify cached results older than this many days so delistings surface |
+| `write_back_versions` | `true` | Record the newest version on the MO2 mod so the main modlist shows its update flag |
+
+## Notes and limits
+
+- **Mods with no Nexus id are skipped** — separators, hand-built mods, xEdit/CK output folders, Creation Club content. The count is shown after each scan.
+- **Version comparison is best-effort.** Nexus version strings are free text; some authors use dates or build numbers. When two versions can't be parsed, a difference is reported as an update rather than silently ignored.
+- **Two MO2 mods from the same Nexus page** each get their own row and their own comparison, but the page is only queried once.
+- **Each queried page costs two requests** — the page itself for availability, plus its file list. The file list is cached, so a page that hasn't changed costs nothing on the next scan.
+- **The cache is shared** across MO2 instances on the same install — it lives in `plugins/data/update_manager_cache.json`. Delete that file to force a clean baseline.
+- **Rate limits** are read from Nexus' own `x-rl-*` response headers and shown in the window. The scan stops early rather than running you out of requests.
+
+## Development
+
+`tools/umd_debug.py` exercises the Nexus half of the plugin outside MO2, using only the standard library:
+
+```bash
+python tools/umd_debug.py creds                    # which credentials were found
+python tools/umd_debug.py validate                 # confirm they work
+python tools/umd_debug.py updated starfield 1w     # the bulk update feed
+python tools/umd_debug.py mod starfield 8868       # version / status / availability
+python tools/umd_debug.py files starfield 8868     # file list and categories
+python tools/umd_debug.py changelog starfield 8868 # changelog
+```
+
+Credentials are never printed, only their source and length.
+
+### Layout
+
+| File | Role |
+| --- | --- |
+| `plugin.py` | `IPluginTool` entry point and settings |
+| `dialog.py` | The window |
+| `updater.py` | Scan engine: decides what to ask Nexus, classifies the answers |
+| `nexus.py` | Async Nexus v1 client on QtNetwork, with rate-limit tracking |
+| `scanner.py` | Reads MO2's modlist, maps game names to Nexus domains, resolves file lines |
+| `downloads.py` | Indexes MO2's downloads folder by `(mod id, file id)` |
+| `cache.py` | On-disk record of the last known state of each mod |
+| `credentials.py` | Reads MO2's Nexus credentials from the Windows Credential Manager |
+| `icon.svg` | Tools-menu icon |

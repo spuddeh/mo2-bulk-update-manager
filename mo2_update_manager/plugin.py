@@ -1,0 +1,84 @@
+import os
+
+try:
+    from PyQt5.QtGui import QIcon
+except ImportError:
+    from PyQt6.QtGui import QIcon
+
+import mobase
+
+from ._version import VERSION
+from .dialog import UpdateManagerDialog
+
+PLUGIN_NAME = "Update Manager"
+
+# MO2 ships Qt's SVG image format plugin (dlls/imageformats/qsvg.dll), so QIcon
+# renders this directly at whatever size the menu asks for.
+ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.svg")
+
+
+class UpdateManagerPlugin(mobase.IPluginTool):
+
+    def __init__(self):
+        super().__init__()
+        self._organizer = None
+        self._parent = None
+
+    def init(self, organizer: mobase.IOrganizer) -> bool:
+        self._organizer = organizer
+        return True
+
+    def name(self) -> str:
+        return PLUGIN_NAME
+
+    def author(self) -> str:
+        return "Spuddeh"
+
+    def description(self) -> str:
+        return (
+            "Checks every Nexus-backed mod in the profile for updates and for pages "
+            "that have been hidden or removed, shows the changelog and file list, and "
+            "sends downloads straight to MO2."
+        )
+
+    def version(self) -> mobase.VersionInfo:
+        major, minor, patch = (int(x) for x in VERSION.split("."))
+        return mobase.VersionInfo(major, minor, patch, mobase.ReleaseType.ALPHA)
+
+    def displayName(self) -> str:
+        return PLUGIN_NAME
+
+    def tooltip(self) -> str:
+        return "Check Nexus for mod updates and delisted mods"
+
+    def icon(self) -> QIcon:
+        return QIcon(ICON_PATH) if os.path.exists(ICON_PATH) else QIcon()
+
+    def setParentWidget(self, widget):
+        self._parent = widget
+
+    def settings(self) -> list:
+        return [
+            mobase.PluginSetting(
+                "api_key",
+                "Personal Nexus API key, used only if MO2's own Nexus login cannot be "
+                "read (nexusmods.com/users/myaccount?tab=api)",
+                "",
+            ),
+            mobase.PluginSetting(
+                "recheck_days",
+                "During a quick scan, re-verify mods whose cached result is older than "
+                "this many days, so delisted mods still surface",
+                30,
+            ),
+            mobase.PluginSetting(
+                "write_back_versions",
+                "Also record the newest version on the MO2 mod, so the main modlist "
+                "shows its own update flag",
+                True,
+            ),
+        ]
+
+    def display(self):
+        dialog = UpdateManagerDialog(self._organizer, PLUGIN_NAME, self._parent)
+        dialog.exec()
