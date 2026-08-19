@@ -273,7 +273,15 @@ Credentials are never printed, only their source and length.
 python tools/test_overrides.py
 ```
 
-It leans on `tools/qt_stub.py`, which fakes just enough of PyQt and `mobase` for the plugin's modules to import. That is good for pure functions and nothing else: every Qt name resolves to a stub that accepts any call and returns zero, so a test that appears to exercise a widget is testing nothing. Anything that paints, or that actually calls MO2, still has to be checked by installing into an instance and restarting it.
+`tools/test_structure.py` is a separate, blunter check: every `self._method()` call must resolve to a method that exists on its class.
+
+```bash
+python tools/test_structure.py
+```
+
+That sounds redundant until you meet the failure it exists for. An edit that replaced a block of `updater.py` by slicing between two method names took `_decide` out with it, because `_decide` sat between them. `py_compile` passed, every behavioural check passed, and the plugin shipped to three MO2 instances before dying on the first scan — nothing outside a live scan calls `_decide`. It is pure AST, imports nothing, and runs anywhere.
+
+`test_overrides.py` leans on `tools/qt_stub.py`, which fakes just enough of PyQt and `mobase` for the plugin's modules to import. That is good for pure functions and nothing else: every Qt name resolves to a stub that accepts any call and returns zero, so a test that appears to exercise a widget is testing nothing. Anything that paints, or that actually calls MO2, still has to be checked by installing into an instance and restarting it.
 
 The one thing modelled rather than stubbed is `mobase.VersionInfo`, because `scanner.is_newer` asks it real questions. It is kept deliberately *lenient*, matching MO2's own prefix-matching parser (`versioninfo.cpp:27`) — a stricter stub once validated behaviour the live plugin did not have, and cost a round trip with a user.
 
@@ -294,3 +302,4 @@ The one thing modelled rather than stubbed is `mobase.VersionInfo`, because `sca
 | `tools/umd_debug.py` | Drives the Nexus API from a shell, on the stdlib alone |
 | `tools/test_overrides.py` | Offline checks for the pure logic behind the window |
 | `tools/qt_stub.py` | Fakes PyQt and `mobase` so those checks can import the plugin |
+| `tools/test_structure.py` | Asserts every `self._method()` call resolves — pure AST, imports nothing |
