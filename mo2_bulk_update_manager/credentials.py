@@ -32,7 +32,7 @@ CRED_TYPE_GENERIC = 1
 OAUTH_CREDENTIAL = "ModOrganizer2_NEXUS_OAUTH_TOKENS"
 APIKEY_CREDENTIAL = "ModOrganizer2_APIKEY"
 
-# MO2 treats a token as expired 5 minutes early; match that so we fall back
+# MO2 treats a token as expired 5 minutes early; match that so the fallback back
 # before Nexus starts returning 401s.
 _EXPIRY_SKEW = timedelta(minutes=5)
 

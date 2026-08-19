@@ -59,7 +59,9 @@ class FakeEntry:
         name="Winds of Cydonia",
         row_label="",
         nexus_name="",
+        status="update",
     ):
+        self.status = status
         self.ignored_version = ignored
         self.latest_version = latest
         self.forced_version = forced
@@ -327,6 +329,86 @@ check(
 check("declines a dated page version", not page_ahead_of("1.0", "2026-08-17"))
 check("declines when either side is empty", not page_ahead_of("", "1.1") and not page_ahead_of("1.0", ""))
 check("a leading v is tolerated", page_ahead_of("v1.1.0", "v1.1.1"))
+
+
+# -- a leftover ignore flag --------------------------------------------------
+#
+# Real case: Cyberpunk Ultra Plus carries ignoredVersion=6.2.2.0 while its page
+# is on 9.1.5.0, so `is_ignored` correctly declines and the row is an update --
+# but the context menu still offered "clear the ignore flag", which reads as
+# though the update were being hidden.
+
+print("ignore_is_spent")
+check(
+    "Ultra Plus: flag from 6.2.2.0, page on 9.1.5.0, row is an update",
+    dialog.ignore_is_spent(
+        FakeEntry(ignored="6.2.2.0", latest="9.1.5.0", status="update")
+    ),
+    "the flag is not hiding this update and the menu has to say so",
+)
+check(
+    "a flag naming the current release is doing its job",
+    not dialog.ignore_is_spent(
+        FakeEntry(ignored="9.1.5.0", latest="9.1.5.0", status="ignored")
+    ),
+)
+check(
+    "an overridden flag is not spent",
+    not dialog.ignore_is_spent(
+        FakeEntry(ignored="9.1.5.0", latest="9.1.5.0", forced="9.1.5.0", status="update")
+    ),
+    "'Respect MO2's ignore flag again' would bring it straight back",
+)
+check("no flag at all", not dialog.ignore_is_spent(FakeEntry(latest="9.1.5.0")))
+check(
+    "whitespace is not a flag",
+    not dialog.ignore_is_spent(FakeEntry(ignored="   ", latest="9.1.5.0")),
+)
+
+
+# -- default window size -----------------------------------------------------
+#
+# A share of the usable screen, not a pixel size. The minimum is a floor the
+# share may not go under, and the screen is a ceiling it may not go over.
+
+print("fit_to_screen")
+check(
+    "1440p: comfortably under full screen",
+    dialog.fit_to_screen(2560, 1400) == (1843, 1092),
+    dialog.fit_to_screen(2560, 1400),
+)
+check(
+    "4K: scales up rather than staying at the old 1040x640",
+    dialog.fit_to_screen(3840, 2120)[0] > 2500,
+    dialog.fit_to_screen(3840, 2120),
+)
+check(
+    "1366x768 laptop: the share would go under the minimum, so the minimum wins",
+    dialog.fit_to_screen(1366, 728) == (1040, 640),
+    dialog.fit_to_screen(1366, 728),
+)
+check(
+    "a screen smaller than the minimum never yields a smaller window",
+    dialog.fit_to_screen(800, 600) == (1040, 640),
+    dialog.fit_to_screen(800, 600),
+)
+check(
+    "never wider than the screen it is on",
+    all(
+        dialog.fit_to_screen(w, h)[0] <= max(w, 1040)
+        and dialog.fit_to_screen(w, h)[1] <= max(h, 640)
+        for w, h in ((1920, 1040), (2560, 1400), (3840, 2120), (1366, 728))
+    ),
+)
+
+print("parse_geometry")
+check("round trips", dialog.parse_geometry("100,50,1600,1000") == (100, 50, 1600, 1000))
+check("a negative x on a left-hand monitor survives",
+      dialog.parse_geometry("-1920,0,1600,1000") == (-1920, 0, 1600, 1000))
+check("nothing saved yet", dialog.parse_geometry("") is None)
+check("MO2 handing back None", dialog.parse_geometry(None) is None)
+check("garbage", dialog.parse_geometry("wide,tall,x,y") is None)
+check("wrong shape", dialog.parse_geometry("100,50,1600") is None)
 
 
 print()

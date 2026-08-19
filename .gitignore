@@ -3,3 +3,8 @@ __pycache__/
 *.zip
 images/
 nexus_description.bbc
+
+# Claude Code project instructions: local, never shared
+CLAUDE.md
+CLAUDE.local.md
+.claude/

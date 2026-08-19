@@ -143,6 +143,13 @@ class NexusClient(QObject):
 
         self.hourly_remaining: Optional[int] = None
         self.daily_remaining: Optional[int] = None
+        # The allowance itself, which is not a constant: a free account is
+        # given 100 an hour and 2500 a day, a Premium one 2000 and 20000
+        # (measured, 2026-08-19). Reading it off the reply means the window can
+        # say what this account actually has instead of quoting one tier at
+        # everyone.
+        self.hourly_limit: Optional[int] = None
+        self.daily_limit: Optional[int] = None
         self.hourly_floor = DEFAULT_HOURLY_FLOOR
         self.throttled = False
 
@@ -190,7 +197,7 @@ class NexusClient(QObject):
     def updated_mods(self, domain: str, period: str, callback) -> None:
         """Every mod in ``domain`` touched within ``period`` ('1d', '1w', '1m').
 
-        One request covers the whole game, which is what makes checking a large
+        One request covers every mod in the game, which is what makes checking a large
         modlist cheap.
         """
         self._enqueue(
@@ -416,6 +423,8 @@ class NexusClient(QObject):
         for header, attr in (
             (b"x-rl-hourly-remaining", "hourly_remaining"),
             (b"x-rl-daily-remaining", "daily_remaining"),
+            (b"x-rl-hourly-limit", "hourly_limit"),
+            (b"x-rl-daily-limit", "daily_limit"),
         ):
             raw = bytes(reply.rawHeader(header)).decode("ascii", "ignore").strip()
             if not raw:

@@ -1,4 +1,4 @@
-"""On-disk memory of what Nexus last told us about each mod.
+"""On-disk memory of what Nexus last reported for each mod.
 
 Without this every scan would have to ask Nexus about every mod, which is
 exactly what makes MO2's built-in check painful on a large modlist. With it,
@@ -16,7 +16,7 @@ import time
 from typing import Optional
 
 # `pluginDataPath()` is shared by every plugin, so this name has to be
-# unmistakably ours. Nothing here reads or removes a file it did not write:
+# unmistakably this plugin's. Nothing here reads or removes a file it did not write:
 # a neighbouring plugin's data is not this plugin's to touch, whatever it is
 # called.
 CACHE_FILENAME = "bulk_update_manager_cache.json"

@@ -165,7 +165,7 @@ def hide(info: DownloadInfo) -> Optional[str]:
     """
     try:
         # newline="" so Windows line endings survive the round trip; without it
-        # every line in the file changes, not just the one we mean to touch.
+        # every line in the file changes, not just the intended one.
         with open(
             info.meta_path, "r", encoding="utf-8", errors="surrogateescape", newline=""
         ) as handle:

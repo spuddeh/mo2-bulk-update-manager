@@ -9,8 +9,14 @@ import time
 from typing import Optional
 
 try:
-    from PyQt5.QtCore import Qt, QTimer, QUrl
-    from PyQt5.QtGui import QBrush, QDesktopServices, QFont, QIcon
+    from PyQt5.QtCore import QRect, Qt, QTimer, QUrl
+    from PyQt5.QtGui import (
+        QBrush,
+        QDesktopServices,
+        QFont,
+        QGuiApplication,
+        QIcon,
+    )
     from PyQt5.QtWidgets import (
         QAbstractItemView,
         QCheckBox,
@@ -33,8 +39,14 @@ try:
         QWidget,
     )
 except ImportError:
-    from PyQt6.QtCore import Qt, QTimer, QUrl
-    from PyQt6.QtGui import QBrush, QDesktopServices, QFont, QIcon
+    from PyQt6.QtCore import QRect, Qt, QTimer, QUrl
+    from PyQt6.QtGui import (
+        QBrush,
+        QDesktopServices,
+        QFont,
+        QGuiApplication,
+        QIcon,
+    )
     from PyQt6.QtWidgets import (
         QAbstractItemView,
         QCheckBox,
@@ -79,6 +91,28 @@ from .theme import Theme
 from .updater import UpdateScan, note_download
 
 _ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.svg")
+
+# The window is a five-column list beside a detail pane, so it needs width more
+# than height and it needs to stay usable on a laptop. Below this it starts
+# eliding mod names, so it is the floor rather than a preference.
+_MIN_SIZE = (1040, 640)
+# Default size as a share of the screen's *available* area -- what is left once
+# the taskbar is taken out. A share rather than a pixel size because the same
+# 1600x1000 that is comfortable on 1440p is off-screen on a 1366x768 laptop and
+# postage-stamp sized on 4K. Deliberately short of full screen: this is a tool
+# window opened over MO2, and it should still read as sitting on top of it.
+_DEFAULT_SCREEN_SHARE = (0.72, 0.78)
+# Where the user's own size and position are kept. `setPersistent` rather than
+# `setPluginSetting`: MO2 only reloads plugin settings it finds in `settings()`
+# (`settings.cpp:registerPlugin`), so an undeclared key would be written to
+# ModOrganizer.ini and then never read back. `[PluginPersistance]` has no such
+# rule, and this does not belong in the settings dialog anyway.
+_GEOMETRY_KEY = "window_geometry"
+
+# How long the selection has to sit still before its changelog and file list
+# are fetched. Long enough that arrowing through the list costs nothing, short
+# enough that clicking a row still feels immediate.
+_DETAILS_DELAY_MS = 300
 _log = get_logger("ui")
 
 _ENTRY_ROLE = Qt.ItemDataRole.UserRole
@@ -236,6 +270,9 @@ class BulkUpdateManagerDialog(QDialog):
         self._skipped_count = 0
         self._disabled_count = 0
         self._account = ""
+        # None until Nexus answers `validate`. False disables the direct
+        # download path -- see _queue_downloads.
+        self._premium: Optional[bool] = None
         self._downloads: dict = {}
         self._theme: Optional[Theme] = None
         # MO2 download id -> (entry, file record) for downloads this window
@@ -244,6 +281,12 @@ class BulkUpdateManagerDialog(QDialog):
         self._in_flight: dict = {}
         self._refresh_pending = False
         self._closed = False
+        # The row whose changelog and file list are wanted once the selection
+        # stops moving. See _on_selection_changed.
+        self._pending_details: Optional[ModEntry] = None
+        self._details_timer = QTimer(self)
+        self._details_timer.setSingleShot(True)
+        self._details_timer.timeout.connect(self._on_details_due)
         # Lowercased words the mod list is filtered down to; empty shows all.
         self._filter_terms: list = []
         # Mods whose MO2 "ignored" flag this window cleared. MO2 holds its own
@@ -257,8 +300,9 @@ class BulkUpdateManagerDialog(QDialog):
         self.setWindowTitle(f"Bulk Update Manager v{VERSION}")
         if os.path.exists(_ICON_PATH):
             self.setWindowIcon(QIcon(_ICON_PATH))
-        self.setMinimumSize(1040, 640)
+        self.setMinimumSize(*_MIN_SIZE)
         self._build_ui()
+        self._restore_geometry()
         self._watch_downloads()
         if self._flag("scan_on_open", True):
             self._start_scan(deep=False)
@@ -278,7 +322,8 @@ class BulkUpdateManagerDialog(QDialog):
         header.addWidget(self._status_label, 1)
         self._rate_label = QLabel("")
         self._rate_label.setToolTip(
-            "Nexus allows 100 API requests per hour and 2500 per day."
+            "How much of your Nexus API allowance is left. The allowance depends "
+            "on the account: 100 an hour on a free one, 2000 on Premium."
         )
         header.addWidget(self._rate_label, 0)
         layout.addLayout(header)
@@ -337,6 +382,12 @@ class BulkUpdateManagerDialog(QDialog):
         )
         _make_scrollable(self._files_tree)
         self._files_tree.itemSelectionChanged.connect(self._on_file_selected)
+        self._files_tree.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self._files_tree.customContextMenuRequested.connect(
+            self._on_file_context_menu
+        )
         files_layout.addWidget(self._files_tree, 3)
         self._file_desc = QTextBrowser()
         self._file_desc.setOpenExternalLinks(True)
@@ -425,6 +476,68 @@ class BulkUpdateManagerDialog(QDialog):
         controls.addWidget(close_btn)
 
         layout.addLayout(controls)
+
+    # -- window size -------------------------------------------------------
+
+    def _available_rect(self):
+        """The usable area of the screen this window is opening on.
+
+        Prefers the parent's screen, so on a multi-monitor setup the window
+        sizes to the monitor MO2 is on rather than to the primary one.
+        """
+        screen = None
+        parent = self.parentWidget()
+        if parent is not None:
+            screen = parent.screen()
+        if screen is None:
+            screen = self.screen() or QGuiApplication.primaryScreen()
+        return screen.availableGeometry() if screen is not None else None
+
+    def _restore_geometry(self) -> None:
+        """Reopen at the size and place the user last left, or a sensible default."""
+        rect = self._available_rect()
+        saved = self._saved_geometry()
+        if saved is not None and rect is not None:
+            x, y, width, height = saved
+            width = max(width, _MIN_SIZE[0])
+            height = max(height, _MIN_SIZE[1])
+            # A monitor that has since been unplugged would otherwise put the
+            # window somewhere the user cannot reach it.
+            visible = rect.intersected(QRect(x, y, width, height))
+            if visible.width() >= 120 and visible.height() >= 60:
+                self.setGeometry(x, y, width, height)
+                return
+
+        if rect is None:
+            self.resize(*_MIN_SIZE)
+            return
+        width, height = fit_to_screen(rect.width(), rect.height())
+        self.resize(width, height)
+        self.move(
+            rect.x() + max(0, (rect.width() - width) // 2),
+            rect.y() + max(0, (rect.height() - height) // 2),
+        )
+
+    def _saved_geometry(self) -> Optional[tuple]:
+        try:
+            raw = self._organizer.persistent(self._plugin_name, _GEOMETRY_KEY, "")
+        except Exception:
+            return None
+        return parse_geometry(raw)
+
+    def _save_geometry(self) -> None:
+        if self.isMaximized() or self.isMinimized():
+            # normalGeometry is what the window returns to, which is the size
+            # worth remembering; a maximised window would otherwise be restored
+            # as an un-maximised window filling the screen.
+            rect = self.normalGeometry()
+        else:
+            rect = self.geometry()
+        value = f"{rect.x()},{rect.y()},{rect.width()},{rect.height()}"
+        try:
+            self._organizer.setPersistent(self._plugin_name, _GEOMETRY_KEY, value)
+        except Exception as exc:
+            _log.debug(tag(f"Could not remember the window size: {exc}"))
 
     # -- scanning ----------------------------------------------------------
 
@@ -542,12 +655,23 @@ class BulkUpdateManagerDialog(QDialog):
 
     def _on_identified(self, user: dict) -> None:
         name = NexusClient.user_name(user)
-        tier = "Premium" if NexusClient.is_premium(user) else "Free"
+        self._premium = NexusClient.is_premium(user)
+        tier = "Premium" if self._premium else "Free"
         self._account = f"{name} ({tier})" if name else tier
-        if not NexusClient.is_premium(user):
+        if not self._premium:
+            # Relabel rather than disable: the page hand-off still works, it
+            # just needs a click on Nexus that this window cannot make.
+            self._download_btn.setText("Open download pages")
             self._download_btn.setToolTip(
-                "Nexus only hands direct download links to Premium accounts. On a free "
-                "account use 'Open on Nexus' and click 'Mod Manager Download'."
+                "Nexus only hands direct download links to Premium accounts, so "
+                "this opens each mod's file on Nexus instead. Click 'Mod Manager "
+                "Download' there and MO2 picks it up from the browser."
+            )
+            _log.info(
+                tag(
+                    "Free Nexus account: downloads open the mod page instead of "
+                    "being queued directly."
+                )
             )
 
     def _confirm_deep_scan(self) -> None:
@@ -595,11 +719,14 @@ class BulkUpdateManagerDialog(QDialog):
             self._progress.setRange(0, 0)
 
     def _on_rate_limit(self, hourly, daily) -> None:
+        client = self._client
         parts = []
         if hourly is not None:
-            parts.append(f"{hourly} left this hour")
+            limit = getattr(client, "hourly_limit", None)
+            parts.append(f"{hourly} of {limit} left this hour" if limit else f"{hourly} left this hour")
         if daily is not None:
-            parts.append(f"{daily} today")
+            limit = getattr(client, "daily_limit", None)
+            parts.append(f"{daily} of {limit} today" if limit else f"{daily} today")
         self._rate_label.setText("Nexus API: " + ", ".join(parts) if parts else "")
 
     def _on_scan_failed(self, error: str) -> None:
@@ -1079,6 +1206,33 @@ class BulkUpdateManagerDialog(QDialog):
             chosen[action] = handler
 
         add(self._open_page, "Open on Nexus")
+
+        # One row, through the same code the buttons use, so a single download
+        # or install cannot drift from the bulk one. Both are worded for what
+        # will actually happen: on a free account nothing is queued, a page is
+        # opened -- see _queue_downloads.
+        if entry.status in _DOWNLOADABLE:
+            if self._premium is False:
+                add(
+                    lambda: self._download_entries([entry]),
+                    "Open this mod's download page",
+                    "Your account is not Premium, so this opens the file on "
+                    "Nexus for you to click 'Mod Manager Download'.",
+                )
+            else:
+                add(
+                    lambda: self._download_entries([entry]),
+                    f"Download {entry.latest_version or 'the latest file'}",
+                    "Send just this mod to MO2's downloads, without ticking it.",
+                )
+        elif entry.status in _INSTALLABLE and entry.download is not None:
+            add(
+                lambda: self._install_entries([entry]),
+                f"Install {entry.download.file_name}",
+                "Run MO2's installer on the archive already in your downloads "
+                "folder.",
+            )
+
         add(
             lambda: self._edit_note(entry),
             "Edit note..." if entry.note else "Add a note...",
@@ -1101,11 +1255,28 @@ class BulkUpdateManagerDialog(QDialog):
                 "Respect MO2's ignore flag again",
             )
 
-        if (entry.ignored_version or "").strip():
-            add(
-                lambda: self._unignore(entry),
-                "Clear MO2's ignore flag for this mod",
-            )
+        ignored_version = (entry.ignored_version or "").strip()
+        if ignored_version:
+            # MO2's ignore flag names one *specific* version, so a flag left
+            # over from an older release is not hiding anything -- Cyberpunk
+            # Ultra Plus carries ignoredVersion=6.2.2.0 while its page is on
+            # 9.1.5.0, and the row is correctly an update. Offering "clear the
+            # ignore flag" there with no qualifier reads as though the update
+            # were being suppressed, so say which of the two this is.
+            if ignore_is_spent(entry):
+                text = f"Clear MO2's stale ignore flag ({ignored_version})"
+                tip = (
+                    f"This flag names {ignored_version}, which is older than "
+                    f"{entry.latest_version or 'the current release'}, so it is "
+                    "not hiding this update. Clearing it only tidies up."
+                )
+            else:
+                text = f"Clear MO2's ignore flag ({ignored_version})"
+                tip = (
+                    "MO2 is hiding this update. Clearing it makes MO2's own "
+                    "modlist show it too."
+                )
+            add(lambda: self._unignore(entry), text, tip)
 
         handler = chosen.get(menu.exec(self._tree.viewport().mapToGlobal(pos)))
         if handler is None:
@@ -1114,7 +1285,7 @@ class BulkUpdateManagerDialog(QDialog):
         # action. Every one of these opens a modal dialog and then rebuilds the
         # list, and doing that while the menu's own exec() is still unwinding
         # rebuilds a tree Qt has not finished laying out -- which is how a saved
-        # note ended up invisible until the window was reopened.
+        # note stayed invisible until the window was reopened.
         QTimer.singleShot(0, handler)
 
     def _mod_of(self, entry: ModEntry):
@@ -1254,6 +1425,21 @@ class BulkUpdateManagerDialog(QDialog):
     def _unignore(self, entry: ModEntry) -> None:
         mod = self._mod_of(entry)
         path = mod.absolutePath() if mod is not None else ""
+        # A flag naming an older version is not suppressing this update; the
+        # menu says so and the confirmation has to agree, or the advice below
+        # sends the user to an override that would override nothing.
+        if ignore_is_spent(entry):
+            why = (
+                f"That flag names {entry.ignored_version}, which is older than "
+                f"{entry.latest_version or 'the current release'}, so it is not "
+                "hiding anything -- this update is already being offered here. "
+                "Clearing it only tidies up."
+            )
+        else:
+            why = (
+                "Use 'Download ... anyway' instead if you only want the update "
+                "offered here and would rather leave MO2 alone."
+            )
         answer = QMessageBox.question(
             self,
             "Clear MO2's ignore flag",
@@ -1262,8 +1448,7 @@ class BulkUpdateManagerDialog(QDialog):
             "MO2 offers no way for a plugin to set this, so the flag is cleared "
             "in the mod's meta.ini directly. MO2 keeps its own copy of that file "
             "in memory, so its modlist will only agree once you restart it.\n\n"
-            "Use 'Download ... anyway' instead if you only want the update "
-            "offered here and would rather leave MO2 alone.",
+            f"{why}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
         )
@@ -1316,10 +1501,28 @@ class BulkUpdateManagerDialog(QDialog):
         self._render_details(entry)
 
         if entry.changelog is None or entry.files is None:
-            self._request_details(entry)
+            # Two requests -- changelog and file list -- for every row the
+            # selection lands on. Holding the down arrow through a thousand-row
+            # list would fire them for every row it passes, and on a free Nexus
+            # account the whole hourly allowance is a hundred. Wait for the
+            # selection to settle, so only the row actually being read costs
+            # anything.
+            self._pending_details = entry
+            self._details_timer.start(_DETAILS_DELAY_MS)
         else:
+            self._pending_details = None
+            self._details_timer.stop()
             self._render_changelog(entry)
             self._render_files(entry)
+
+    def _on_details_due(self) -> None:
+        entry, self._pending_details = self._pending_details, None
+        # The row may have been left behind while the timer ran, or the whole
+        # list rebuilt under it by a finished download.
+        if entry is None or self._current_entry() is not entry:
+            return
+        if entry.changelog is None or entry.files is None:
+            self._request_details(entry)
 
     def _request_details(self, entry: ModEntry) -> None:
         if entry.key in self._loading_details or self._client is None:
@@ -1366,7 +1569,16 @@ class BulkUpdateManagerDialog(QDialog):
             ("Status", _GROUP_TITLES.get(entry.status, entry.status)),
         ]
         if entry.ignored_version:
-            rows.append(("Ignored version", entry.ignored_version))
+            # Say whether the flag is still doing anything, so this pane and the
+            # context menu tell the same story about a leftover ignore.
+            spent = ignore_is_spent(entry)
+            rows.append(
+                (
+                    "Ignored version",
+                    entry.ignored_version
+                    + (" (older than the current release; not hiding it)" if spent else ""),
+                )
+            )
         if entry.forced_version:
             rows.append(("Offered anyway", entry.forced_version))
         if entry.note:
@@ -1503,6 +1715,64 @@ class BulkUpdateManagerDialog(QDialog):
         )
         self._use_file_btn.setEnabled(True)
 
+    def _on_file_context_menu(self, pos) -> None:
+        """Right-click a row in the Files tab: download that exact file.
+
+        The button beside the list only *marks* a file as the one to use, so
+        the download still comes from the mod list. Downloading straight from
+        here skips that round trip -- and passes the file record itself to
+        `_queue_downloads`, so an old or optional file the picker would never
+        have chosen is the one that gets queued.
+        """
+        item = self._files_tree.itemAt(pos)
+        entry = self._current_entry()
+        if item is None or entry is None:
+            return
+        info = item.data(0, _ENTRY_ROLE) or {}
+        if not info.get("file_id"):
+            return
+        self._files_tree.setCurrentItem(item)
+
+        menu = QMenu(self._files_tree)
+        menu.setToolTipsVisible(True)
+        chosen: dict = {}
+
+        def add(handler, text: str, tip: str = ""):
+            action = menu.addAction(text)
+            if tip:
+                action.setToolTip(tip)
+            chosen[action] = handler
+
+        name = str(info.get("name") or "this file")
+        if self._premium is False:
+            add(
+                lambda: self._open_download_pages([(entry, info)]),
+                "Open this file's page on Nexus",
+                "Your account is not Premium, so this opens the file on Nexus "
+                "for you to click 'Mod Manager Download'.",
+            )
+        else:
+            add(
+                lambda: self._queue_downloads([(entry, info)]),
+                f"Download {name}",
+                "Send this exact file to MO2's downloads, whatever the mod list "
+                "would otherwise have picked.",
+            )
+        if info.get("file_id") != entry.picked_file_id:
+            add(
+                self._on_use_file,
+                "Use this file for the update",
+                "Mark it as the file the mod list downloads when this row is "
+                "ticked, without downloading anything now.",
+            )
+
+        handler = chosen.get(menu.exec(self._files_tree.viewport().mapToGlobal(pos)))
+        if handler is None:
+            return
+        # Same reason as the mod list's menu: these open a modal dialog and
+        # then repaint, which must not happen inside the menu's own exec().
+        QTimer.singleShot(0, handler)
+
     def _on_use_file(self) -> None:
         entry = self._current_entry()
         item = self._files_tree.currentItem()
@@ -1520,9 +1790,17 @@ class BulkUpdateManagerDialog(QDialog):
             QDesktopServices.openUrl(QUrl(entry.page_url))
 
     def _on_install(self) -> None:
-        targets = [
-            e for e in self._checked_entries(_INSTALLABLE) if e.download is not None
-        ]
+        self._install_entries(self._checked_entries(_INSTALLABLE))
+
+    def _install_entries(self, entries: list) -> None:
+        """Install these rows' already-downloaded archives.
+
+        Split out of `_on_install` so the context menu can install one row
+        through exactly the same confirmation, hide-after-install rule and
+        `_just_installed` bookkeeping as the button does. A single row that
+        skipped any of that would be a second, quietly different install path.
+        """
+        targets = [e for e in entries if e.download is not None]
         if not targets:
             return
 
@@ -1563,7 +1841,7 @@ class BulkUpdateManagerDialog(QDialog):
             # MO2 has not written this file id there yet. See _seed_installed_ids.
             # Keyed on the mod MO2 says it created, not on the row's own name:
             # its installer lets the user rename, and the rescan will find it
-            # under whatever name it ended up with.
+            # under whatever name it now carries.
             if entry.download.file_id:
                 try:
                     name = result.name() or entry.internal_name
@@ -1595,6 +1873,50 @@ class BulkUpdateManagerDialog(QDialog):
 
         if installed:
             self._start_scan(deep=False)
+
+    def _open_download_pages(self, plan: list) -> None:
+        """Free-account path: open each file's Nexus page in the browser.
+
+        Deep-links the Files tab and the file itself, so the user lands on the
+        row with the 'Mod Manager Download' button rather than on the
+        description. Clicking it hands MO2 an ``nxm://`` link carrying the key
+        and expiry that a free account's download needs -- the same route MO2's
+        own "Query info" uses, and the only one it accepts without Premium.
+        """
+        lines = "\n".join(
+            f"  {e.display_name}  ->  {info.get('name')} "
+            f"({info.get('version') or '?'}, {_size(info.get('size_kb'))})"
+            + _note_block(e)
+            for e, info in plan
+        )
+        answer = QMessageBox.question(
+            self,
+            "Open download pages",
+            f"Your Nexus account is not Premium, so Nexus will not hand this "
+            f"window a download link.\n\nOpen {len(plan)} mod page(s) in your "
+            f"browser instead?\n\n{lines}\n\nOn each page, click 'Mod Manager "
+            "Download'. MO2 catches the link and this window follows the "
+            "download from there, exactly as it would for a Premium account.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        for entry, info in plan:
+            url = entry.page_url
+            file_id = info.get("file_id")
+            if file_id:
+                url = f"{url}?tab=files&file_id={int(file_id)}"
+            _log.info(
+                tag(f"Opening {url} for {entry.display_name} (free account)")
+            )
+            QDesktopServices.openUrl(QUrl(url))
+
+        self._status_label.setText(
+            f"Opened {len(plan)} page(s). Click 'Mod Manager Download' on each; "
+            "this window picks the download up from MO2."
+        )
 
     def _hide_downloads_after_install(self) -> bool:
         """Whether to hide a download once this window installs it.
@@ -1630,7 +1952,15 @@ class BulkUpdateManagerDialog(QDialog):
         return False
 
     def _on_download(self) -> None:
-        targets = self._checked_entries(_DOWNLOADABLE)
+        self._download_entries(self._checked_entries(_DOWNLOADABLE))
+
+    def _download_entries(self, targets: list) -> None:
+        """Download the newest wanted file for each of these rows.
+
+        Split out of `_on_download` for the context menu, which hands in one
+        row. The file-list fetch below is the reason a row cannot just call
+        `_start_downloads`: a mod the user never selected has no `files` yet.
+        """
         if not targets:
             return
 
@@ -1674,12 +2004,34 @@ class BulkUpdateManagerDialog(QDialog):
                 continue
             plan.append((entry, info))
 
+        self._queue_downloads(plan, skipped)
+
+    def _queue_downloads(self, plan: list, skipped: list = ()) -> None:
+        """Confirm and hand a list of (entry, file record) pairs to MO2.
+
+        Takes the pairs rather than the rows so the Files tab can queue one
+        *named* file -- picking a file there and downloading it are the same
+        action, and routing that through `_start_downloads` would re-derive the
+        choice from `picked_file_id` and hand back whatever it preferred.
+        """
+        skipped = list(skipped)
         if not plan:
             QMessageBox.information(
                 self,
                 "Nothing to download",
                 "No downloadable files were found for the selected mods.",
             )
+            return
+
+        # Nexus hands direct download links to Premium accounts only. MO2 asks
+        # for one anyway and, when the account is free and no nxm:// key came
+        # with the request, logs a warning and returns without starting or
+        # failing anything (`nexusinterface.cpp:955`) -- the reserved download
+        # sits pending forever and this window is never told. So on a free
+        # account do not queue at all: send the user to the page, which is the
+        # only way MO2 ever gets a usable key.
+        if self._premium is False:
+            self._open_download_pages(plan)
             return
 
         # The note earns its keep here more than anywhere else: a mod ignored
@@ -1761,6 +2113,7 @@ class BulkUpdateManagerDialog(QDialog):
         # MO2's download handlers cannot be unregistered, so mark the window
         # gone and let them return early rather than touch dead widgets.
         self._closed = True
+        self._save_geometry()
         self._in_flight.clear()
         if self._client is not None:
             self._client.cancel()
@@ -1777,6 +2130,56 @@ _NOTE_MARK = "✎"
 # would widen the Notes column for all thousand rows. The full text is on the
 # row's tooltip and in the Details pane.
 _NOTE_LIMIT = 70
+
+
+def ignore_is_spent(entry) -> bool:
+    """True when a mod carries an ignore flag that is no longer hiding anything.
+
+    MO2's flag names one *specific* version, so `is_ignored` stops honouring it
+    the moment the page moves past it -- Cyberpunk Ultra Plus sits at
+    ``ignoredVersion=6.2.2.0`` with the page on 9.1.5.0 and is correctly listed
+    as an update. Offering "clear the ignore flag" on that row with no
+    qualifier reads as though the update were being suppressed, which is the
+    bug this answers.
+
+    A flag the user has overridden with 'Download ... anyway' is *not* spent:
+    it would still apply if the override were dropped, which is exactly what
+    'Respect MO2's ignore flag again' does.
+    """
+    if not (entry.ignored_version or "").strip():
+        return False
+    if (entry.forced_version or "").strip():
+        return False
+    return entry.status != ModEntry.IGNORED
+
+
+def fit_to_screen(available_width: int, available_height: int) -> tuple:
+    """The default window size for a screen with this much usable room.
+
+    A share of the screen rather than a pixel size: 1600x1000 is comfortable at
+    1440p, off-screen on a 1366x768 laptop and postage-stamp sized on 4K. The
+    minimum still wins on a screen too small for it -- a window that cannot
+    show its columns is worse than one that overhangs, and Qt lets the user
+    move that.
+    """
+    wide, tall = _DEFAULT_SCREEN_SHARE
+    width = max(_MIN_SIZE[0], int(available_width * wide))
+    height = max(_MIN_SIZE[1], int(available_height * tall))
+    return (
+        min(width, max(available_width, _MIN_SIZE[0])),
+        min(height, max(available_height, _MIN_SIZE[1])),
+    )
+
+
+def parse_geometry(raw) -> Optional[tuple]:
+    """``"x,y,w,h"`` back into four ints, or None if it is not that."""
+    parts = str(raw or "").split(",")
+    if len(parts) != 4:
+        return None
+    try:
+        return tuple(int(part.strip()) for part in parts)
+    except ValueError:
+        return None
 
 
 def _note_age(entry) -> str:
@@ -1887,7 +2290,7 @@ def _file_by_id(files, file_id):
 
 
 def _pick_file(files, latest_version: str, file_line: str = ""):
-    """Best guess at the file a user wants.
+    """Best guess at the file to offer.
 
     When the mod's file line is known, stay inside it -- downloading the page's
     main file for a mod installed from an addon would be wrong.

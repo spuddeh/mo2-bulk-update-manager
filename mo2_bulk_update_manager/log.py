@@ -13,7 +13,7 @@ Levels, chosen so a bug report is useful without DEBUG being turned on:
     downloaded or installed. A handful of lines per session.
 ``DEBUG``
     Per-mod classification and per-request detail. Hundreds of lines on a
-    large modlist, which is why it is opt-in.
+    large modlist, so it is opt-in.
 ``WARNING``
     Something the user should know went wrong but the run continued.
 ``ERROR``
@@ -45,7 +45,7 @@ def get_logger(name: str = "") -> logging.Logger:
 
 
 def tag(message: str) -> str:
-    """Mark a line as ours.
+    """Mark a line as this plugin's.
 
     MO2 logs only the message, not the logger name, so without this the
     plugin's lines are indistinguishable from MO2's own in a bug report.
