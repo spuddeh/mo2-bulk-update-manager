@@ -51,6 +51,7 @@ from .scanner import (
     current_in_chain,
     find_in_chain,
     is_ignored,
+    current_on_page,
     is_retired,
     page_ahead_of,
     position_of,
@@ -592,62 +593,101 @@ class UpdateScan(QObject):
                 f"chain; asking {len(pages)} page(s) for their own version"
             )
         )
-        self._pending = len(pages)
+        # Two requests per page: its version, which decides whether this is an
+        # update, and its file list, which names the candidate when the version
+        # cannot decide. Still only for pages that dead-ended.
+        self._page_versions: dict = {}
+        self._pending = len(pages) * 2
         for (domain, mod_id) in list(pages):
             self._client.mod_info(domain, mod_id, self._on_page_version)
+            self._client.mod_files(domain, mod_id, self._on_page_files)
 
     def _on_page_version(self, response) -> None:
         _, domain, mod_id = response.tag
-        entries = [e for e in self._dead_ends if e.key == (domain, mod_id)]
-        page_version = str((response.data or {}).get("version") or "") if response.ok else ""
-
-        for entry in entries:
-            self._settle_dead_end(entry, page_version, response)
-
+        self._page_versions[(domain, mod_id)] = (
+            str((response.data or {}).get("version") or "") if response.ok else None
+        )
         self._pending -= 1
         if self._pending <= 0:
-            self._complete()
+            self._settle_all_dead_ends()
 
-    def _settle_dead_end(self, entry: ModEntry, page_version: str, response) -> None:
-        installed = entry.installed_version
-        if not response.ok:
+    def _on_page_files(self, response) -> None:
+        _, domain, mod_id = response.tag
+        files = (response.data or {}).get("files") or [] if response.ok else []
+        for entry in self._dead_ends:
+            if entry.key == (domain, mod_id):
+                entry.files = files
+        self._pending -= 1
+        if self._pending <= 0:
+            self._settle_all_dead_ends()
+
+    def _settle_all_dead_ends(self) -> None:
+        for entry in self._dead_ends:
+            self._settle_dead_end(entry, self._page_versions.get(entry.key))
+        self._complete()
+
+    def _settle_dead_end(self, entry: ModEntry, page_version) -> None:
+        """Decide what a retired file with a dead-end chain should say.
+
+        Three outcomes, and only the first is certain enough to act on:
+
+        * the page has moved past the installed version -- a real update, and
+          the file to fetch is the one at that version;
+        * the page has not, but something live is still offered there -- which
+          may or may not be a successor, so it is named and handed over;
+        * nothing usable came back -- say so rather than imply either.
+        """
+        if page_version is None:
             entry.status = ModEntry.UNCHECKED
             entry.message = (
-                f"Nexus has retired this file, and the page could not be asked "
-                f"what replaced it ({response.error})."
+                "Nexus has retired this file, and the page could not be asked "
+                "what replaced it."
             )
             return
 
-        if not page_ahead_of(installed, page_version):
-            # Retired, but the page has not moved past it. What is current
-            # there is a different download, not a successor -- Praetor Suit
-            # Flashlight Fix was retired while its page stayed at 1.0, and the
-            # only live file on it is an unrelated opaque-visor patch.
-            entry.status = ModEntry.CURRENT
-            entry.message = (
-                f"Nexus has retired this file, but the page is still at "
-                f"{page_version or '?'}. Nothing here replaces it."
-            )
-            return
-
-        entry.status = ModEntry.UPDATE
-        entry.latest_version = page_version
         # Everything `_decide` derived from the chain points at the retired
         # file: `latest_file` is it, `picked_file_id` is its id, and
         # `file_line` is its name -- which `_pick_file` filters on first, so
         # leaving any of them set would offer the file already installed.
-        # Cleared so the download resolves on the page version instead, which
-        # is the only thing here that names the successor.
         entry.latest_file = None
         entry.picked_file_id = None
         entry.file_line = ""
+
+        if page_ahead_of(entry.installed_version, page_version):
+            entry.status = ModEntry.UPDATE
+            entry.latest_version = page_version
+            entry.message = (
+                f"The page has moved to {page_version} under a different file "
+                "name, so this file's update chain ends here."
+            )
+            self._note_download(entry)
+            return
+
+        candidate = current_on_page(entry.files)
+        if candidate is None:
+            entry.status = ModEntry.UNCHECKED
+            entry.message = (
+                "Nexus has retired this file and the page offers nothing live "
+                "in its place. Check the page before relying on it."
+            )
+            return
+
+        # The page version cannot separate a successor from an unrelated
+        # download here, and neither can any name. Page 12903 dropped every
+        # mention of its flashlight fix and now leads with an opaque-visor
+        # patch that really is its continuation, while another page in the same
+        # state would be offering something unrelated. So: name it, and let the
+        # person who knows the mod decide.
+        entry.status = ModEntry.SUPERSEDED
+        entry.latest_version = str(candidate.get("version") or "")
+        entry.picked_file_id = candidate.get("file_id")
+        entry.latest_file = candidate
+        name = str(candidate.get("name") or "this page's current file")
         entry.message = (
-            f"The page has moved to {page_version} under a different file name, "
-            "so this file's update chain ends here."
+            f'Nexus retired this file. The page now leads with "{name}"'
+            + (f" ({entry.latest_version})" if entry.latest_version else "")
+            + " -- check whether that replaces it."
         )
-        self._note_download(entry)
-
-
 
     def _decide(self, entry: ModEntry) -> None:
         versions = self._cache.get_chain(entry.chain_id) if entry.chain_id else None

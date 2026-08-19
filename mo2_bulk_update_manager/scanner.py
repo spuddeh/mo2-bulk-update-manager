@@ -108,6 +108,10 @@ class ModEntry:
     DOWNLOADING = "downloading"  # queued with MO2, not finished yet
     DOWNLOADED = "downloaded"  # the newer file is already in MO2's downloads
     IGNORED = "ignored"  # an update exists, but MO2 was told to ignore it
+    # Nexus has retired the installed file, its update chain holds nothing
+    # newer, and the page version does not settle what replaced it. Something
+    # on the page probably supersedes it, but only a person can say what.
+    SUPERSEDED = "superseded"
     DELISTED = "delisted"
     HIDDEN = "hidden"
     CURRENT = "current"
@@ -576,6 +580,36 @@ def page_ahead_of(file_version: str, page_version: str) -> bool:
     mine += (0,) * (width - len(mine))
     theirs += (0,) * (width - len(theirs))
     return theirs > mine
+
+
+# Categories Nexus uses for an upload that something else has replaced.
+_RETIRED_CATEGORIES = ("OLD_VERSION", "ARCHIVED")
+
+
+def current_on_page(files: list) -> Optional[dict]:
+    """The download a page leads with, from a v1 file list.
+
+    Only used to *name* a candidate for a retired file whose chain ended, so
+    the user has something concrete to judge. Deliberately not used to decide
+    anything: on page 12903 this returns the opaque-visor patch, which really
+    was the successor to the flashlight fix, and on another page the same shape
+    would return an unrelated download.
+    """
+    live = [
+        f
+        for f in (files or [])
+        if str(f.get("category_name") or "").upper() not in _RETIRED_CATEGORIES
+    ]
+    if not live:
+        return None
+    return max(
+        live,
+        key=lambda f: (
+            1 if str(f.get("category_name") or "").upper() == "MAIN" else 0,
+            1 if f.get("is_primary") else 0,
+            int(f.get("uploaded_timestamp") or 0),
+        ),
+    )
 
 
 def is_ignored(entry: ModEntry) -> bool:

@@ -90,6 +90,7 @@ _GROUPS = (
     (ModEntry.DOWNLOADING, "Downloading"),
     (ModEntry.DOWNLOADED, "Downloaded, waiting to be installed"),
     (ModEntry.UPDATE, "Updates available"),
+    (ModEntry.SUPERSEDED, "Superseded on Nexus -- your call"),
     (ModEntry.DELISTED, "No longer on Nexus"),
     (ModEntry.HIDDEN, "Hidden or unavailable"),
     (ModEntry.IGNORED, "Ignored in MO2"),
@@ -101,9 +102,14 @@ _GROUPS = (
 _GROUP_TITLES = dict(_GROUPS)
 
 # Groups whose rows get a checkbox, and what the checked rows are for.
-_DOWNLOADABLE = (ModEntry.UPDATE,)
+_DOWNLOADABLE = (ModEntry.UPDATE, ModEntry.SUPERSEDED)
 _INSTALLABLE = (ModEntry.DOWNLOADED,)
 _CHECKABLE = _DOWNLOADABLE + _INSTALLABLE
+
+# What "Select all" reaches. Superseded rows are deliberately left out: the
+# whole point of that group is that nobody knows whether the file named on it
+# is a successor, so it is a row-by-row decision and never a sweep.
+_SWEEPABLE = (ModEntry.UPDATE, ModEntry.DOWNLOADED)
 
 # Groups that start collapsed: nothing here needs the user to act.
 _COLLAPSED = (ModEntry.CURRENT, ModEntry.IGNORED)
@@ -113,6 +119,7 @@ _MARKED = (
     ModEntry.DOWNLOADING,
     ModEntry.DOWNLOADED,
     ModEntry.UPDATE,
+    ModEntry.SUPERSEDED,
     ModEntry.DELISTED,
     ModEntry.HIDDEN,
 )
@@ -370,7 +377,8 @@ class BulkUpdateManagerDialog(QDialog):
         controls = QHBoxLayout()
         self._select_all = QCheckBox("Select all")
         self._select_all.setToolTip(
-            "Tick every update and every pending install the filter is showing."
+            "Tick every update and every pending install the filter is showing.\n"
+            "Superseded rows are left alone -- each one is a judgement call."
         )
         # Tristate so it can show "some" while rows move between groups on
         # their own. `clicked` rather than `stateChanged`, so that programmatic
@@ -613,6 +621,7 @@ class BulkUpdateManagerDialog(QDialog):
         parts = [
             (counts.get(ModEntry.UPDATE, 0), "to download"),
             (counts.get(ModEntry.DOWNLOADED, 0), "downloaded, ready to install"),
+            (counts.get(ModEntry.SUPERSEDED, 0), "superseded, needing a look"),
             (counts.get(ModEntry.DELISTED, 0), "removed from Nexus"),
             (counts.get(ModEntry.HIDDEN, 0), "hidden"),
             (counts.get(ModEntry.IGNORED, 0), "ignored"),
@@ -980,7 +989,7 @@ class BulkUpdateManagerDialog(QDialog):
         untickable Downloading row the moment it is queued -- so "select all"
         would otherwise sit there checked with nothing checked beneath it.
         """
-        items = self._update_items(visible_only=True)
+        items = self._update_items(_SWEEPABLE, visible_only=True)
         checked = sum(
             1 for item in items if item.checkState(0) == Qt.CheckState.Checked
         )
@@ -998,7 +1007,7 @@ class BulkUpdateManagerDialog(QDialog):
         self._select_all.blockSignals(blocked)
 
     def _on_select_all_clicked(self, *_) -> None:
-        items = self._update_items(visible_only=True)
+        items = self._update_items(_SWEEPABLE, visible_only=True)
         if not items:
             self._sync_select_all()
             return

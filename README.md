@@ -58,6 +58,7 @@ There is nothing to lose in practice, because the plugin was never released unde
 | **Downloading** | This window queued the file with MO2 and it has not finished yet | Wait — the row moves on by itself |
 | **Downloaded, waiting to be installed** | A newer file for this mod is already in your downloads folder | Tick it and hit **Install selected** |
 | **Updates available** | A newer file exists on Nexus and you don't have it | Tick it and hit **Download selected** |
+| **Superseded on Nexus — your call** | Nexus retired your file, and what replaced it cannot be determined automatically | Read the Notes column, then decide. **Select all** never touches these |
 | **No longer on Nexus** | The page 404s or reports a removed status | Decide whether to keep the mod |
 | **Hidden or unavailable** | The page exists but is hidden or under moderation | Usually temporary; check back |
 | **Ignored in MO2** | You used MO2's *Ignore update* on exactly this version | Nothing — or right-click to take it anyway, or to note why you didn't |
@@ -183,7 +184,17 @@ The page's own version settles it, and it is the only thing that does. Two real 
 | Native Interactions Framework 1.1.0 | yes | **1.1.1** | A real update. The author renamed the file to *Native Interaction 1.1.1*, so it started a new chain. |
 | Praetor Suit Flashlight Fix 1.0 | yes | **1.0** | Not an update. The page's only live download is an unrelated opaque-visor patch. |
 
-So a retired file with a dead-end chain costs one extra v1 request for its page — 3 mods out of 1644 across three real profiles, not the per-page cost this plugin exists to avoid. If the page has genuinely moved past your version, the file to download is resolved from the page version, never from a name: the successor above matches on `1.1.1` and nothing else, which is what keeps *Praetor Suit Opaque Visor* from being offered as an upgrade to a flashlight fix.
+A retired file with a dead-end chain therefore costs two v1 requests for its page — its version and its file list. That is 3 mods out of 1644 across three real profiles, not the per-page cost this plugin exists to avoid. What happens next depends on what those answer:
+
+**The page moved past your version.** A real update, and the file to fetch is resolved from the page version, never from a name — the successor above matches on `1.1.1` and nothing else.
+
+**The page did not, but it still offers something live.** This is the honest *don't know*. Praetor Suit looks like a clean decline from the numbers, and it isn't: the author renamed the whole page, dropped every mention of the flashlight fix, and moved it to old files. The opaque-visor patch really is its continuation — the page version simply never moved. Another page in exactly that state would be offering something unrelated, and nothing in the API distinguishes the two.
+
+So those land in **Superseded on Nexus — your call**, with the page's current download named in the Notes column:
+
+> Nexus retired this file. The page now leads with "Praetor Suit Opaque Visor" (1.0) — check whether that replaces it.
+
+The row is tickable, and ticking it downloads the named file. **Select all** deliberately skips the whole group: the point of it is that only a person can say, so it is a row-by-row decision and never a sweep. The confirmation dialog names the file one last time before anything is queued.
 
 The comparison is strict on purpose. Both sides must be plain dotted numbers — `1.0.0joker`, `1.0.1b`, a date or a build string means the author numbers that file on its own scheme, and comparing it against the page version manufactures a result. `mobase.VersionInfo` is a prefix match (`versioninfo.cpp:27`) and would read `1.0.0joker` as a perfectly good `1.0.0`; that leniency is right for "is this file newer?" and wrong here.
 
