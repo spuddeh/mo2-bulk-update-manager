@@ -170,6 +170,23 @@ Neither is `is_primary`, despite the name. In four of five chains examined it wa
 
 The comparison that follows needs no version parsing at all: your file is an update if Nexus has retired it, or if the chain's current file sits at a higher position. That quietly fixes a class of bug that version strings cannot — *MovementAndCameraTweaks* went `v1.41` → `v1.5`, which every semantic comparison reads as a downgrade because 41 > 5, while the author meant it as a decimal. A different upload that Nexus has neither retired nor promoted is **not** an update; it is another current file on the same chain, which is what `2.1` and `2.1-alternate` are to each other.
 
+### When an update chain dead-ends
+
+Nexus keys a chain on the file's **name**, so an author who names every upload after its version gets a fresh one-entry chain per release rather than one chain with a history. On a real 1071-mod profile, 309 mods sit in a chain with exactly one version in it.
+
+That is fine until such a file is retired. The chain then holds nothing but the file you already have, marked `old_version`, and it cannot say what replaced it — Nexus recorded the successor as a separate chain, and `file_updates` on the v1 endpoint does not link them either. Reported as *Up to date*, which is the one answer that is certainly wrong: Nexus has said outright that this file is superseded.
+
+The page's own version settles it, and it is the only thing that does. Two real cases that are indistinguishable from inside the chain:
+
+| Installed | Retired | Page version | Verdict |
+| --- | --- | --- | --- |
+| Native Interactions Framework 1.1.0 | yes | **1.1.1** | A real update. The author renamed the file to *Native Interaction 1.1.1*, so it started a new chain. |
+| Praetor Suit Flashlight Fix 1.0 | yes | **1.0** | Not an update. The page's only live download is an unrelated opaque-visor patch. |
+
+So a retired file with a dead-end chain costs one extra v1 request for its page — 3 mods out of 1644 across three real profiles, not the per-page cost this plugin exists to avoid. If the page has genuinely moved past your version, the file to download is resolved from the page version, never from a name: the successor above matches on `1.1.1` and nothing else, which is what keeps *Praetor Suit Opaque Visor* from being offered as an upgrade to a flashlight fix.
+
+The comparison is strict on purpose. Both sides must be plain dotted numbers — `1.0.0joker`, `1.0.1b`, a date or a build string means the author numbers that file on its own scheme, and comparing it against the page version manufactures a result. `mobase.VersionInfo` is a prefix match (`versioninfo.cpp:27`) and would read `1.0.0joker` as a perfectly good `1.0.0`; that leniency is right for "is this file newer?" and wrong here.
+
 ### When MO2 never recorded a file id
 
 MO2 only started writing `[installedFiles]` at some point, so a few percent of any real profile has nothing exact to resolve — 26 of 543 mods in a real Starfield profile. Those fall back to matching the page's chain names against the installation archive name, then the MO2 mod name, longest match first.
@@ -218,7 +235,6 @@ Nothing is written to the credential store, and the token is never logged or dis
 - **Two MO2 mods from the same Nexus page** each get their own row and their own comparison, but the page is only queried once.
 - **Scanning is batched, not per-mod.** Page status and installed-file lookups go out in batch requests; only update chains are fetched individually, and those are cached, so a chain that has not changed costs nothing on the next scan. A 1071-mod profile with 908 pages settles in around six requests.
 - **The Files tab is v1 and is not cached.** File size, description and per-file changelog have no v3 equivalent, so opening a mod costs two requests each time. Classification never touches them.
-- **A page that has moved past your file is no longer flagged.** Comparing your file against the *page* version needed a page version, and v3 chains do not carry one. It used to be an annotation on an up-to-date row; the case it caught — you have the newest of an optional file while the page's main file has moved on — is real but no longer detected.
 - **Installing something re-scans immediately, and MO2's meta.ini has not caught up.** `[installedFiles]` is set in memory when MO2 installs a mod and flushed to disk a moment later, while the plugin reads that file directly — there is no accessor for it. The rescan starts a millisecond after `installMod` returns and loses the race, so a mod that was just correctly updated looks like one MO2 never recorded a file id for. On a page hosting a single download it resolves anyway; on a page hosting two — *Cyberpunk Ultra Plus* and *Ultra Skin* share page 10490 — it landed in **Not checked** until the next scan. No timing fixes that, so the window instead remembers the file id it asked MO2 to install and uses it until the disk copy agrees.
 - **The cache is shared** across MO2 instances on the same install — it lives in `plugins/data/bulk_update_manager_cache.json`. Delete that file to force a clean baseline.
 - **Rate limits** are read from Nexus' own `x-rl-*` response headers and shown in the window. The scan stops early rather than running you out of requests.

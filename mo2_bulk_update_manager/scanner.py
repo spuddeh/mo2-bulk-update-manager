@@ -529,6 +529,55 @@ def choose_chain(entry: ModEntry, chains: list) -> Optional[dict]:
     return None
 
 
+# Only a plain dotted number counts here. Anything else -- "1.0.0joker",
+# "1.0.1b", a date, a build string -- means the author is numbering that file
+# on its own scheme, and comparing it with the page version is meaningless.
+_PLAIN_VERSION = re.compile(r"^\d+(?:\.\d+)*$")
+
+
+def _plain_version(text: str) -> Optional[tuple]:
+    """Parse a strictly numeric version, or None if it is anything else.
+
+    Deliberately stricter than ``mobase.VersionInfo``, whose regex is a prefix
+    match (``versioninfo.cpp:27``) and so reads "1.0.0joker" as a perfectly
+    good 1.0.0. That leniency is right when asking "is this file newer?" and
+    wrong when asking "has the page overtaken my file?", where it manufactures
+    comparisons between unrelated numbering schemes.
+    """
+    cleaned = (text or "").strip()
+    if cleaned[:1].lower() == "v":
+        cleaned = cleaned[1:].strip()
+    if not cleaned or not _PLAIN_VERSION.match(cleaned):
+        return None
+    return tuple(int(part) for part in cleaned.split("."))
+
+
+def page_ahead_of(file_version: str, page_version: str) -> bool:
+    """True when the page's own version has run past a file's version.
+
+    The last word on whether a retired file has a successor. Nexus models a
+    page as a set of *update chains*, one per download, keyed on the file's
+    name -- so an author who names each upload after its version gets a fresh
+    one-entry chain per release, and an installed file's chain dead-ends the
+    moment it is retired. Nothing inside that chain can say what replaced it.
+
+    The page version can. Native Interactions Framework 1.1.0 was retired and
+    the page moved to 1.1.1, which is a real update; Praetor Suit Flashlight
+    Fix was retired while its page stayed at 1.0, because what is current
+    there is a different product, not a successor. Both look identical from
+    inside the chain.
+    """
+    mine = _plain_version(file_version)
+    theirs = _plain_version(page_version)
+    if mine is None or theirs is None:
+        return False
+
+    width = max(len(mine), len(theirs))
+    mine += (0,) * (width - len(mine))
+    theirs += (0,) * (width - len(theirs))
+    return theirs > mine
+
+
 def is_ignored(entry: ModEntry) -> bool:
     """True when MO2 was told to ignore exactly this version.
 

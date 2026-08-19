@@ -52,6 +52,7 @@ from .scanner import (
     find_in_chain,
     is_ignored,
     is_retired,
+    page_ahead_of,
     position_of,
 )
 
@@ -135,6 +136,7 @@ class UpdateScan(QObject):
         self._domains: list[str] = []
         self._changed: dict[str, set] = {}
         self._pending = 0
+        self._dead_ends: list = []
         self._done = 0
         self._total = 0
         self._chain_wanted: dict[str, list] = {}
@@ -560,12 +562,92 @@ class UpdateScan(QObject):
     # -- classify ----------------------------------------------------------
 
     def _classify(self) -> None:
+        self._dead_ends = []
         for key in self._live:
             for entry in self._by_key[key]:
                 if entry.status in (ModEntry.DELISTED, ModEntry.HIDDEN, ModEntry.ERROR):
                     continue
                 self._decide(entry)
-        self._complete()
+        self._check_dead_ends()
+
+    def _check_dead_ends(self) -> None:
+        """Ask the page itself about files Nexus retired with no replacement.
+
+        One v1 request per affected *page*, and only pages that reached here --
+        3 out of 1644 mods across three real profiles. The alternative would be
+        asking every page its version on every scan, which is the per-mod cost
+        this plugin exists to avoid.
+        """
+        if not self._dead_ends:
+            self._complete()
+            return
+
+        pages: dict = {}
+        for entry in self._dead_ends:
+            pages.setdefault(entry.key, []).append(entry)
+
+        _log.info(
+            tag(
+                f"{len(self._dead_ends)} file(s) retired with no successor in their "
+                f"chain; asking {len(pages)} page(s) for their own version"
+            )
+        )
+        self._pending = len(pages)
+        for (domain, mod_id) in list(pages):
+            self._client.mod_info(domain, mod_id, self._on_page_version)
+
+    def _on_page_version(self, response) -> None:
+        _, domain, mod_id = response.tag
+        entries = [e for e in self._dead_ends if e.key == (domain, mod_id)]
+        page_version = str((response.data or {}).get("version") or "") if response.ok else ""
+
+        for entry in entries:
+            self._settle_dead_end(entry, page_version, response)
+
+        self._pending -= 1
+        if self._pending <= 0:
+            self._complete()
+
+    def _settle_dead_end(self, entry: ModEntry, page_version: str, response) -> None:
+        installed = entry.installed_version
+        if not response.ok:
+            entry.status = ModEntry.UNCHECKED
+            entry.message = (
+                f"Nexus has retired this file, and the page could not be asked "
+                f"what replaced it ({response.error})."
+            )
+            return
+
+        if not page_ahead_of(installed, page_version):
+            # Retired, but the page has not moved past it. What is current
+            # there is a different download, not a successor -- Praetor Suit
+            # Flashlight Fix was retired while its page stayed at 1.0, and the
+            # only live file on it is an unrelated opaque-visor patch.
+            entry.status = ModEntry.CURRENT
+            entry.message = (
+                f"Nexus has retired this file, but the page is still at "
+                f"{page_version or '?'}. Nothing here replaces it."
+            )
+            return
+
+        entry.status = ModEntry.UPDATE
+        entry.latest_version = page_version
+        # Everything `_decide` derived from the chain points at the retired
+        # file: `latest_file` is it, `picked_file_id` is its id, and
+        # `file_line` is its name -- which `_pick_file` filters on first, so
+        # leaving any of them set would offer the file already installed.
+        # Cleared so the download resolves on the page version instead, which
+        # is the only thing here that names the successor.
+        entry.latest_file = None
+        entry.picked_file_id = None
+        entry.file_line = ""
+        entry.message = (
+            f"The page has moved to {page_version} under a different file name, "
+            "so this file's update chain ends here."
+        )
+        self._note_download(entry)
+
+
 
     def _decide(self, entry: ModEntry) -> None:
         versions = self._cache.get_chain(entry.chain_id) if entry.chain_id else None
@@ -604,7 +686,13 @@ class UpdateScan(QObject):
         entry.chain_position = position_of(installed)
 
         same_file = installed.get("game_scoped_id") == current.get("game_scoped_id")
-        if same_file:
+        if same_file and is_retired(installed):
+            # Nexus has retired this file and its chain holds nothing newer, so
+            # the chain cannot say what replaced it -- see `page_ahead_of`. The
+            # page version can, and is worth one v1 request for the handful of
+            # mods that land here.
+            self._dead_ends.append(entry)
+        elif same_file:
             entry.status = ModEntry.CURRENT
             entry.message = ""
         elif is_retired(installed) or position_of(current) > entry.chain_position:

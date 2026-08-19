@@ -32,6 +32,7 @@ from mo2_bulk_update_manager import dialog  # noqa: E402
 from mo2_bulk_update_manager.scanner import (  # noqa: E402
     clear_ignored_version,
     is_ignored,
+    page_ahead_of,
     read_overrides,
 )
 
@@ -295,6 +296,37 @@ check(
 check("nothing stored", read_overrides(FakeMod({}), NOW) == {})
 check("no plugin name to ask under", read_overrides(FakeMod({OTHER: {"a": "b"}}), "") == {})
 check("MO2 refusing is not fatal", read_overrides(FakeMod({}, explode=True), NOW) == {})
+
+
+# -- retired files whose update chain dead-ends -----------------------------
+#
+# Nexus keys an update chain on the file's *name*, so an author who names each
+# upload after its version gets a fresh one-entry chain per release. When such
+# a file is retired, its chain holds nothing newer and cannot say what replaced
+# it. The page version is the only thing that can. Both cases below are real.
+
+print("page_ahead_of")
+check(
+    "the page moved on: Native Interactions 1.1.0 -> page 1.1.1",
+    page_ahead_of("1.1.0", "1.1.1"),
+    "chain 7817598 dead-ends; the successor is only visible as the page version",
+)
+check(
+    "the page did not move: Praetor Suit Flashlight Fix, retired, page still 1.0",
+    not page_ahead_of("1.0", "1.0"),
+    "its page's only live download is an unrelated opaque-visor patch",
+)
+check("MO2's four-segment padding is not an update", not page_ahead_of("1.1.0.0", "1.1"))
+check("a shorter page version still compares", page_ahead_of("1.1", "1.1.1"))
+check("a lower page version is not an update", not page_ahead_of("2.0", "1.9"))
+check(
+    "declines when the file numbers itself its own way",
+    not page_ahead_of("1.0.0joker", "1.0.1"),
+    "comparing unrelated numbering schemes is what made this noisy before",
+)
+check("declines a dated page version", not page_ahead_of("1.0", "2026-08-17"))
+check("declines when either side is empty", not page_ahead_of("", "1.1") and not page_ahead_of("1.0", ""))
+check("a leading v is tolerated", page_ahead_of("v1.1.0", "v1.1.1"))
 
 
 print()

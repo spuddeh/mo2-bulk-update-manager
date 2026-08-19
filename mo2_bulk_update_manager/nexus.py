@@ -199,6 +199,19 @@ class NexusClient(QObject):
             ("updated", domain, period),
         )
 
+    def mod_info(self, domain: str, mod_id: int, callback) -> None:
+        """One mod page's own record, including the version it advertises.
+
+        v1 only. The v3 batch carries status, name and summary and no version
+        at all, and the page version is the only thing that can tell a retired
+        file with a dead-end chain from one whose page has genuinely moved on.
+        """
+        self._enqueue(
+            f"{API_BASE}/games/{domain}/mods/{mod_id}.json",
+            callback,
+            ("mod", domain, mod_id),
+        )
+
     def mod_files(self, domain: str, mod_id: int, callback) -> None:
         self._enqueue(
             f"{API_BASE}/games/{domain}/mods/{mod_id}/files.json",
