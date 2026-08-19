@@ -331,6 +331,57 @@ check("declines when either side is empty", not page_ahead_of("", "1.1") and not
 check("a leading v is tolerated", page_ahead_of("v1.1.0", "v1.1.1"))
 
 
+# -- reusing an archive that is already on disk -----------------------------
+#
+# Picking an older or optional upload in the Files tab and downloading it asks
+# for an exact file id the scan never looked up, so `note_download` cannot have
+# checked it. MO2's downloads folder is indexed by (mod id, file id), which is
+# exactly what the picked file record carries.
+
+print("partition_by_local_copy")
+
+from mo2_bulk_update_manager.downloads import DownloadInfo, READY  # noqa: E402
+
+
+def local(mod_id, file_id, name="archive.zip", state=READY, hidden=False):
+    return DownloadInfo(mod_id, file_id, name, "", "", "", state, hidden)
+
+
+E = FakeEntry(name="Ultra Plus")
+E.mod_id = 10490
+FILE = {"file_id": 156665, "name": "Cyberpunk Ultra Plus v9.1.4"}
+
+ready, installed, remaining = dialog.partition_by_local_copy(
+    [(E, FILE)], {(10490, 156665): local(10490, 156665)}
+)
+check("an archive waiting to be installed is offered instead of a download",
+      len(ready) == 1 and not remaining)
+check("and it carries the record found on disk", ready and ready[0][2].file_id == 156665)
+
+ready, installed, remaining = dialog.partition_by_local_copy(
+    [(E, FILE)], {(10490, 156665): local(10490, 156665, state="installed")}
+)
+check("an archive MO2 already installed is reported but still downloadable",
+      not ready and len(installed) == 1 and len(remaining) == 1,
+      "reinstalling is a real thing to want, so it is a note and not a refusal")
+
+ready, installed, remaining = dialog.partition_by_local_copy(
+    [(E, FILE)], {(10490, 999999): local(10490, 999999)}
+)
+check("a different file on the same page is not this file",
+      not ready and not installed and len(remaining) == 1,
+      "the index is keyed on (mod id, file id); the mod id alone would collide")
+
+ready, installed, remaining = dialog.partition_by_local_copy([(E, FILE)], {})
+check("nothing downloaded yet", not ready and len(remaining) == 1)
+
+ready, installed, remaining = dialog.partition_by_local_copy(
+    [(E, {"name": "no id"})], {(10490, 156665): local(10490, 156665)}
+)
+check("a file record with no id cannot match anything",
+      not ready and len(remaining) == 1)
+
+
 # -- a leftover ignore flag --------------------------------------------------
 #
 # Real case: Cyberpunk Ultra Plus carries ignoredVersion=6.2.2.0 while its page

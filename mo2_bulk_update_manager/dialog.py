@@ -1874,6 +1874,93 @@ class BulkUpdateManagerDialog(QDialog):
         if installed:
             self._start_scan(deep=False)
 
+    def _reuse_downloaded(self, plan: list) -> list:
+        """Offer the copy on disk before fetching a file again.
+
+        The scan already does this for the file it picked itself, through
+        `note_download`. It cannot do it for a file chosen by hand afterwards:
+        picking an older or optional upload in the Files tab and downloading it
+        asks for an exact file id the scan never looked up, and MO2's downloads
+        folder is indexed by exactly that. So check here, where every path that
+        queues anything passes through.
+
+        Returns what is left to download. Anything reused is moved onto the
+        install queue instead, which is where a scan would have put it.
+        """
+        if not self._downloads:
+            return plan
+
+        ready, installed, remaining = partition_by_local_copy(plan, self._downloads)
+
+        if not ready and not installed:
+            return plan
+
+        lines = []
+        for e, info, found in ready:
+            lines.append(
+                f"  {e.display_name}  ->  {found.file_name}"
+                + (" (hidden from the Downloads tab)" if found.hidden else "")
+            )
+        for e, info, found in installed:
+            lines.append(
+                f"  {e.display_name}  ->  {found.file_name} "
+                "(MO2 has installed this archive before)"
+            )
+
+        if not ready:
+            QMessageBox.information(
+                self,
+                "Already in your downloads",
+                f"{len(installed)} of these archive(s) are already in your "
+                f"downloads folder, but MO2 has installed them before, so they "
+                f"are not waiting for anything:\n\n" + "\n".join(lines)
+                + "\n\nDownloading again is fine if that is what you meant.",
+            )
+            return plan
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Already in your downloads")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(
+            f"{len(ready)} of these file(s) are already in your downloads "
+            f"folder:\n\n" + "\n".join(lines)
+            + "\n\nUse the copies you already have?"
+        )
+        use = box.addButton("Use them", QMessageBox.ButtonRole.AcceptRole)
+        again = box.addButton("Download again", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(use)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked is again:
+            return plan
+        if clicked is not use:
+            return []
+
+        for entry, info, found in ready:
+            entry.download = found
+            entry.picked_file_id = info.get("file_id")
+            entry.latest_file = info
+            entry.status = ModEntry.DOWNLOADED
+            entry.message = (
+                "Already downloaded, hidden from the Downloads tab."
+                if found.hidden
+                else "Already downloaded, not installed."
+            )
+            _log.info(
+                tag(
+                    f"Reusing {found.file_name} for {entry.display_name} rather "
+                    "than downloading it again"
+                )
+            )
+        self._populate(self._entries)
+        self._status_label.setText(
+            f"{len(ready)} file(s) were already downloaded. They are waiting on "
+            "the install queue."
+        )
+        return remaining
+
     def _open_download_pages(self, plan: list) -> None:
         """Free-account path: open each file's Nexus page in the browser.
 
@@ -2023,6 +2110,13 @@ class BulkUpdateManagerDialog(QDialog):
             )
             return
 
+        # Emptying the plan here means every file was already on disk and has
+        # been moved to the install queue, which `_reuse_downloaded` has
+        # already reported. Falling through would claim nothing was found.
+        plan = self._reuse_downloaded(plan)
+        if not plan:
+            return
+
         # Nexus hands direct download links to Premium accounts only. MO2 asks
         # for one anyway and, when the account is free and no nxm:// key came
         # with the request, logs a warning and returns without starting or
@@ -2130,6 +2224,28 @@ _NOTE_MARK = "✎"
 # would widen the Notes column for all thousand rows. The full text is on the
 # row's tooltip and in the Details pane.
 _NOTE_LIMIT = 70
+
+
+def partition_by_local_copy(plan: list, downloads: dict) -> tuple:
+    """Split (entry, file record) pairs by what is already in the downloads folder.
+
+    Returns ``(ready, installed, remaining)``. ``ready`` is waiting to be
+    installed and should be offered instead of a download. ``installed`` is on
+    disk but MO2 has installed that archive before, which is worth saying and
+    is not a reason to refuse: reinstalling is a real thing to want. So those
+    stay in ``remaining`` as well.
+    """
+    ready, installed, remaining = [], [], []
+    for entry, info in plan:
+        found = downloads_index.find(downloads, entry.mod_id, info.get("file_id"))
+        if found is None:
+            remaining.append((entry, info))
+        elif found.usable:
+            ready.append((entry, info, found))
+        else:
+            installed.append((entry, info, found))
+            remaining.append((entry, info))
+    return ready, installed, remaining
 
 
 def ignore_is_spent(entry) -> bool:
