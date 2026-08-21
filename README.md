@@ -48,8 +48,12 @@ from the Windows Credential Manager). Nothing else to set up.
 
 **Right-click a row** to act on that one mod without ticking anything: download it, install it, open
 its Nexus page, write a note, or deal with MO2's ignore flag. **Right-click in the Files tab** to
-download that exact file. Anything already sitting in your downloads folder is offered for install
-rather than fetched a second time.
+act on one exact file.
+
+The menu says what will actually happen. If the archive is already on disk it offers **Install
+`<file>` from disk** and calls the download **Re-download**; if it is not, it just says
+**Download**. Installing from disk works on archives MO2 hid after an earlier install, so there is
+no trip to the Downloads tab to unhide anything.
 
 | Group | What it means |
 | --- | --- |

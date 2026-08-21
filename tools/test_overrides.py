@@ -340,46 +340,69 @@ check("a leading v is tolerated", page_ahead_of("v1.1.0", "v1.1.1"))
 
 print("partition_by_local_copy")
 
-from mo2_bulk_update_manager.downloads import DownloadInfo, READY  # noqa: E402
+from mo2_bulk_update_manager.downloads import (  # noqa: E402
+    DownloadInfo,
+    INCOMPLETE,
+    INSTALLED,
+    READY,
+    installable,
+)
 
 
 def local(mod_id, file_id, name="archive.zip", state=READY, hidden=False):
-    return DownloadInfo(mod_id, file_id, name, "", "", "", state, hidden)
+    return DownloadInfo(mod_id, file_id, name, "C:/dl/" + name, "", "", state, hidden)
 
 
 E = FakeEntry(name="Ultra Plus")
 E.mod_id = 10490
 FILE = {"file_id": 156665, "name": "Cyberpunk Ultra Plus v9.1.4"}
 
-ready, installed, remaining = dialog.partition_by_local_copy(
-    [(E, FILE)], {(10490, 156665): local(10490, 156665)}
+
+def split(index):
+    return dialog.partition_by_local_copy([(E, FILE)], index)
+
+
+found, remaining = split({(10490, 156665): local(10490, 156665)})
+check("an archive waiting to be installed is offered", len(found) == 1 and not remaining)
+check("and it carries the record found on disk", found and found[0][2].file_id == 156665)
+
+found, remaining = split(
+    {(10490, 156665): local(10490, 156665, state=INSTALLED, hidden=True)}
 )
-check("an archive waiting to be installed is offered instead of a download",
-      len(ready) == 1 and not remaining)
-check("and it carries the record found on disk", ready and ready[0][2].file_id == 156665)
-
-ready, installed, remaining = dialog.partition_by_local_copy(
-    [(E, FILE)], {(10490, 156665): local(10490, 156665, state="installed")}
+check(
+    "an archive MO2 installed and then hid is still installable",
+    len(found) == 1 and not remaining,
+    "hiding after install is the normal workflow; gating on `usable` sent the "
+    "user to the Downloads tab to unhide it by hand",
 )
-check("an archive MO2 already installed is reported but still downloadable",
-      not ready and len(installed) == 1 and len(remaining) == 1,
-      "reinstalling is a real thing to want, so it is a note and not a refusal")
 
-ready, installed, remaining = dialog.partition_by_local_copy(
-    [(E, FILE)], {(10490, 999999): local(10490, 999999)}
+found, remaining = split({(10490, 156665): local(10490, 156665, state=INCOMPLETE)})
+check(
+    "an interrupted download is not an archive",
+    not found and len(remaining) == 1,
+    "there is no whole file behind it",
 )
-check("a different file on the same page is not this file",
-      not ready and not installed and len(remaining) == 1,
-      "the index is keyed on (mod id, file id); the mod id alone would collide")
 
-ready, installed, remaining = dialog.partition_by_local_copy([(E, FILE)], {})
-check("nothing downloaded yet", not ready and len(remaining) == 1)
+found, remaining = split({(10490, 999999): local(10490, 999999)})
+check(
+    "a different file on the same page is not this file",
+    not found and len(remaining) == 1,
+    "the index is keyed on (mod id, file id); the mod id alone would collide",
+)
 
-ready, installed, remaining = dialog.partition_by_local_copy(
+found, remaining = split({})
+check("nothing downloaded yet", not found and len(remaining) == 1)
+
+found, remaining = dialog.partition_by_local_copy(
     [(E, {"name": "no id"})], {(10490, 156665): local(10490, 156665)}
 )
-check("a file record with no id cannot match anything",
-      not ready and len(remaining) == 1)
+check("a file record with no id cannot match anything", not found and len(remaining) == 1)
+
+check(
+    "installable() and usable disagree exactly where it matters",
+    installable({(1, 2): local(1, 2, state=INSTALLED)}, 1, 2) is not None
+    and not local(1, 2, state=INSTALLED).usable,
+)
 
 
 # -- a leftover ignore flag --------------------------------------------------

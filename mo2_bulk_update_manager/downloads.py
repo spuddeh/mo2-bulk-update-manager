@@ -217,6 +217,27 @@ def hide(info: DownloadInfo) -> Optional[str]:
     return None
 
 
+def installable(index: dict, mod_id: int, file_id: Optional[int]):
+    """The archive on disk for this file, if there is one worth installing.
+
+    Distinct from :func:`find` plus ``usable``. ``usable`` answers "is this
+    waiting to be installed", which is what a scan needs to decide whether a
+    row belongs on the install queue. This answers "can this be installed right
+    now", which is what a menu offering *Install from disk* needs, and the two
+    differ for the case that matters most: MO2 marks a download installed and,
+    if the user asked it to, hides it from the Downloads tab. The archive is
+    still there and installing it again is the whole point of the offer.
+
+    :func:`scan` only indexes archives that exist on disk, so presence is
+    enough. An interrupted download is not, because there is no whole archive
+    behind it.
+    """
+    info = find(index, mod_id, file_id)
+    if info is None or info.state == INCOMPLETE:
+        return None
+    return info
+
+
 def find(index: dict, mod_id: int, file_id: Optional[int]) -> Optional[DownloadInfo]:
     if not index or not file_id:
         return None

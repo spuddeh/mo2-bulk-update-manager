@@ -129,6 +129,28 @@ Two Starfield mods in a real profile cannot be placed and it is correct that the
 *SFHotkeys* is installed from an archive matching none of its page's chain names. Guessing would
 offer the wrong download, so it does not guess.
 
+## Archives you already have
+
+MO2's downloads folder is indexed by `(mod id, file id)`, which is exactly what a Nexus file record
+carries, so the plugin always knows whether the file it is about to fetch is already on disk.
+
+**The right-click menu says so before you click.** With an archive present it offers *Install
+`<file>` from disk* and renames the download to *Re-download*; with none it simply says *Download*.
+Ticking rows and pressing **Download selected** asks the same question once for the batch.
+
+The test is **whether an archive exists on disk**, not whether MO2 still considers it pending. Those
+differ in the case that matters most. MO2 marks a download installed, and if you asked it to, hides
+it from the Downloads tab; the archive is still there. Gating on MO2's pending flag would mean
+finding the mod, being told the file is already downloaded, closing the window, opening the Downloads
+tab, unhiding the archive and finding it again. `installMod` takes a path, so none of that is
+necessary.
+
+Only an interrupted download is excluded, because there is no whole archive behind it.
+
+Installing this way runs MO2's normal installer, so any FOMOD still asks its usual questions, and
+the window remembers the file id it asked MO2 to install so the rescan afterwards does not lose the
+race against MO2's own `meta.ini` write.
+
 ## What the columns show
 
 The **File** column shows the chain's name whenever it differs from the MO2 mod name. In the Files

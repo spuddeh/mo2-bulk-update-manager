@@ -1212,6 +1212,26 @@ class BulkUpdateManagerDialog(QDialog):
         # will actually happen: on a free account nothing is queued, a page is
         # opened -- see _queue_downloads.
         if entry.status in _DOWNLOADABLE:
+            wanted = entry.latest_file or _file_by_id(
+                entry.files, entry.picked_file_id
+            )
+            local = downloads_index.installable(
+                self._downloads,
+                entry.mod_id,
+                (wanted or {}).get("file_id") if wanted else None,
+            )
+            if local is not None:
+                add(
+                    lambda: self._install_from_disk(entry, wanted or {}, local),
+                    f"Install {local.file_name} from disk",
+                    "That archive is already in your downloads folder"
+                    + (
+                        ", hidden by MO2 after an earlier install. "
+                        "Installing from here does not need it unhidden."
+                        if local.hidden
+                        else "."
+                    ),
+                )
             if self._premium is False:
                 add(
                     lambda: self._download_entries([entry]),
@@ -1222,7 +1242,11 @@ class BulkUpdateManagerDialog(QDialog):
             else:
                 add(
                     lambda: self._download_entries([entry]),
-                    f"Download {entry.latest_version or 'the latest file'}",
+                    (
+                        f"Download {entry.latest_version or 'the latest file'}"
+                        if local is None
+                        else f"Re-download {entry.latest_version or 'it'}"
+                    ),
                     "Send just this mod to MO2's downloads, without ticking it.",
                 )
         elif entry.status in _INSTALLABLE and entry.download is not None:
@@ -1744,19 +1768,44 @@ class BulkUpdateManagerDialog(QDialog):
             chosen[action] = handler
 
         name = str(info.get("name") or "this file")
+        # Say up front whether this file is already on disk. Offering
+        # "Download" and then answering "it is already downloaded" leaves the
+        # user to find it in MO2's Downloads tab themselves, which for anyone
+        # who hides downloads after installing means unhiding them first.
+        local = downloads_index.installable(
+            self._downloads, entry.mod_id, info.get("file_id")
+        )
+        if local is not None:
+            where = (
+                "It is hidden from MO2's Downloads tab, and installing from "
+                "here does not need it unhidden."
+                if local.hidden
+                else "It is already in your downloads folder."
+            )
+            add(
+                lambda: self._install_from_disk(entry, info, local),
+                f"Install {local.file_name} from disk",
+                f"{where} MO2 runs its normal installer, so any FOMOD still "
+                "asks the usual questions.",
+            )
+
         if self._premium is False:
             add(
                 lambda: self._open_download_pages([(entry, info)]),
-                "Open this file's page on Nexus",
+                "Open this file's page on Nexus"
+                if local is None
+                else "Open this file's page on Nexus to fetch it again",
                 "Your account is not Premium, so this opens the file on Nexus "
                 "for you to click 'Mod Manager Download'.",
             )
         else:
             add(
-                lambda: self._queue_downloads([(entry, info)]),
-                f"Download {name}",
+                lambda: self._queue_downloads([(entry, info)], force=True),
+                f"Download {name}" if local is None else f"Re-download {name}",
                 "Send this exact file to MO2's downloads, whatever the mod list "
-                "would otherwise have picked.",
+                "would otherwise have picked."
+                if local is None
+                else "Fetch it again even though a copy is already on disk.",
             )
         if info.get("file_id") != entry.picked_file_id:
             add(
@@ -1851,7 +1900,10 @@ class BulkUpdateManagerDialog(QDialog):
             _log.info(
                 tag(f"Installed {entry.display_name} from {entry.download.file_name}")
             )
-            if hide_after:
+            if hide_after and not entry.download.hidden:
+                # Installing from disk usually means the archive was hidden by
+                # an earlier install already. Rewriting the meta to say so
+                # again would count it as newly hidden in the tally below.
                 error = downloads_index.hide(entry.download)
                 if error:
                     _log.warning(tag(f"Could not hide download: {error}"))
@@ -1874,6 +1926,27 @@ class BulkUpdateManagerDialog(QDialog):
         if installed:
             self._start_scan(deep=False)
 
+    def _install_from_disk(self, entry, info: dict, found) -> None:
+        """Install one archive already on disk, without a download or a rescan first.
+
+        The point of the whole plugin is to save a round trip, and the round
+        trip this removes is the worst one left: find the mod, discover the
+        file is already downloaded, close the window, open MO2's Downloads tab,
+        unhide the archive MO2 hid when it was installed, and find it again.
+        `installMod` takes a path, so none of that is necessary.
+        """
+        entry.download = found
+        entry.picked_file_id = info.get("file_id")
+        if info:
+            entry.latest_file = info
+        _log.info(
+            tag(
+                f"Installing {found.file_name} from disk for {entry.display_name}"
+                + (" (hidden in MO2's Downloads tab)" if found.hidden else "")
+            )
+        )
+        self._install_entries([entry])
+
     def _reuse_downloaded(self, plan: list) -> list:
         """Offer the copy on disk before fetching a file again.
 
@@ -1890,75 +1963,52 @@ class BulkUpdateManagerDialog(QDialog):
         if not self._downloads:
             return plan
 
-        ready, installed, remaining = partition_by_local_copy(plan, self._downloads)
-
-        if not ready and not installed:
+        local, remaining = partition_by_local_copy(plan, self._downloads)
+        if not local:
             return plan
 
         lines = []
-        for e, info, found in ready:
-            lines.append(
-                f"  {e.display_name}  ->  {found.file_name}"
-                + (" (hidden from the Downloads tab)" if found.hidden else "")
-            )
-        for e, info, found in installed:
-            lines.append(
-                f"  {e.display_name}  ->  {found.file_name} "
-                "(MO2 has installed this archive before)"
-            )
-
-        if not ready:
-            QMessageBox.information(
-                self,
-                "Already in your downloads",
-                f"{len(installed)} of these archive(s) are already in your "
-                f"downloads folder, but MO2 has installed them before, so they "
-                f"are not waiting for anything:\n\n" + "\n".join(lines)
-                + "\n\nDownloading again is fine if that is what you meant.",
-            )
-            return plan
+        for e, info, found in local:
+            note = ""
+            if found.hidden:
+                note = " (hidden by MO2 after an earlier install)"
+            elif not found.usable:
+                note = " (MO2 has installed this archive before)"
+            lines.append(f"  {e.display_name}  ->  {found.file_name}{note}")
 
         box = QMessageBox(self)
         box.setWindowTitle("Already in your downloads")
         box.setIcon(QMessageBox.Icon.Question)
         box.setText(
-            f"{len(ready)} of these file(s) are already in your downloads "
-            f"folder:\n\n" + "\n".join(lines)
-            + "\n\nUse the copies you already have?"
+            f"{len(local)} of these file(s) are already on disk:\n\n"
+            + "\n".join(lines)
+            + "\n\nInstall them from there instead of downloading again?"
         )
-        use = box.addButton("Use them", QMessageBox.ButtonRole.AcceptRole)
+        install = box.addButton("Install from disk", QMessageBox.ButtonRole.AcceptRole)
         again = box.addButton("Download again", QMessageBox.ButtonRole.DestructiveRole)
         box.addButton(QMessageBox.StandardButton.Cancel)
-        box.setDefaultButton(use)
+        box.setDefaultButton(install)
         box.exec()
 
         clicked = box.clickedButton()
         if clicked is again:
             return plan
-        if clicked is not use:
+        if clicked is not install:
             return []
 
-        for entry, info, found in ready:
+        targets = []
+        for entry, info, found in local:
             entry.download = found
             entry.picked_file_id = info.get("file_id")
             entry.latest_file = info
-            entry.status = ModEntry.DOWNLOADED
-            entry.message = (
-                "Already downloaded, hidden from the Downloads tab."
-                if found.hidden
-                else "Already downloaded, not installed."
-            )
+            targets.append(entry)
             _log.info(
                 tag(
-                    f"Reusing {found.file_name} for {entry.display_name} rather "
-                    "than downloading it again"
+                    f"Installing {found.file_name} from disk for "
+                    f"{entry.display_name} rather than downloading it again"
                 )
             )
-        self._populate(self._entries)
-        self._status_label.setText(
-            f"{len(ready)} file(s) were already downloaded. They are waiting on "
-            "the install queue."
-        )
+        self._install_entries(targets)
         return remaining
 
     def _open_download_pages(self, plan: list) -> None:
@@ -2093,7 +2143,7 @@ class BulkUpdateManagerDialog(QDialog):
 
         self._queue_downloads(plan, skipped)
 
-    def _queue_downloads(self, plan: list, skipped: list = ()) -> None:
+    def _queue_downloads(self, plan: list, skipped: list = (), force: bool = False) -> None:
         """Confirm and hand a list of (entry, file record) pairs to MO2.
 
         Takes the pairs rather than the rows so the Files tab can queue one
@@ -2110,12 +2160,15 @@ class BulkUpdateManagerDialog(QDialog):
             )
             return
 
-        # Emptying the plan here means every file was already on disk and has
-        # been moved to the install queue, which `_reuse_downloaded` has
-        # already reported. Falling through would claim nothing was found.
-        plan = self._reuse_downloaded(plan)
-        if not plan:
-            return
+        # `force` comes from a menu item that already said "Re-download", so
+        # asking again would be asking twice. Emptying the plan otherwise means
+        # every file was already on disk and has been dealt with, which
+        # `_reuse_downloaded` reports itself; falling through would claim
+        # nothing was found.
+        if not force:
+            plan = self._reuse_downloaded(plan)
+            if not plan:
+                return
 
         # Nexus hands direct download links to Premium accounts only. MO2 asks
         # for one anyway and, when the account is free and no nxm:// key came
@@ -2227,25 +2280,24 @@ _NOTE_LIMIT = 70
 
 
 def partition_by_local_copy(plan: list, downloads: dict) -> tuple:
-    """Split (entry, file record) pairs by what is already in the downloads folder.
+    """Split (entry, file record) pairs by whether the archive is already on disk.
 
-    Returns ``(ready, installed, remaining)``. ``ready`` is waiting to be
-    installed and should be offered instead of a download. ``installed`` is on
-    disk but MO2 has installed that archive before, which is worth saying and
-    is not a reason to refuse: reinstalling is a real thing to want. So those
-    stay in ``remaining`` as well.
+    Returns ``(local, remaining)``. The split is on whether there is an archive
+    to install, not on whether MO2 considers it pending. An archive MO2 marked
+    installed and then hid is still on disk and still installable, and for
+    anyone who hides downloads after installing that is the usual state rather
+    than the exception.
     """
-    ready, installed, remaining = [], [], []
+    local, remaining = [], []
     for entry, info in plan:
-        found = downloads_index.find(downloads, entry.mod_id, info.get("file_id"))
+        found = downloads_index.installable(
+            downloads, entry.mod_id, info.get("file_id")
+        )
         if found is None:
             remaining.append((entry, info))
-        elif found.usable:
-            ready.append((entry, info, found))
         else:
-            installed.append((entry, info, found))
-            remaining.append((entry, info))
-    return ready, installed, remaining
+            local.append((entry, info, found))
+    return local, remaining
 
 
 def ignore_is_spent(entry) -> bool:
