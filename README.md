@@ -32,8 +32,10 @@ Copy the `mo2_bulk_update_manager/` folder into your MO2 `plugins/` directory, s
 
 Restart MO2. It appears under **Tools > MO2 Bulk Update Manager**.
 
-**Requires** MO2 **2.5.3** or later, a Nexus account signed in to MO2, and Windows (credentials come
-from the Windows Credential Manager). Nothing else to set up.
+**Requires** MO2 **2.5.3beta12** or later, a Nexus account signed in to MO2, and Windows
+(credentials come from the Windows Credential Manager). Nothing else to set up. That MO2 build is
+not a public release and comes from the **dev-builds** channel on the Mod Organizer 2 Discord;
+**2.5.2** is untested. See [Installing and upgrading](docs/install.md).
 
 > **Upgrading from a folder called `mo2_update_manager`?** Delete it, or MO2 loads the plugin twice.
 > See [Installing and upgrading](docs/install.md).
