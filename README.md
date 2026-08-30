@@ -1,5 +1,7 @@
 # MO2 Bulk Update Manager
 
+**On Nexus: [nexusmods.com/site/mods/2231](https://www.nexusmods.com/site/mods/2231)**
+
 Checks every Nexus-backed mod in your MO2 profile in one pass. Tells you which have updates, which
 have been **hidden or removed from Nexus**, shows the changelog and file list side by side, and
 sends downloads straight to MO2's Downloads tab.

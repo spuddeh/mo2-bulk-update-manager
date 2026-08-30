@@ -13,6 +13,10 @@ Nexus Premium is not required, but the free path works differently and has never
 
 ## Installing
 
+The release archive comes from either
+[Nexus](https://www.nexusmods.com/site/mods/2231) or the
+[GitHub releases page](https://github.com/spuddeh/mo2-bulk-update-manager/releases).
+
 Copy the `mo2_bulk_update_manager/` folder into your MO2 `plugins/` directory, so you have:
 
 ```text
