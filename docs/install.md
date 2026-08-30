@@ -3,7 +3,7 @@
 ## Requirements
 
 - Mod Organizer 2 **2.5.3beta12** or later. That build is not a public release: it comes from the
-  **dev-builds** channel on the Mod Organizer 2 Discord. **2.5.2**, the current public release, is
+  **dev-builds** channel on the [Mod Organizer 2 Discord](https://discord.gg/ewUVAqyrQX). **2.5.2**, the current public release, is
   untested. Reports either way are welcome.
 - A Nexus account signed in to MO2, under **Settings > Nexus**.
 - Windows, because credentials come from the Windows Credential Manager.
