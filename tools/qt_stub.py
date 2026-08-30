@@ -96,5 +96,5 @@ def install():
     mobase.IPluginTool = _Stub
     mobase.PluginSetting = _Stub
     mobase.ModState = types.SimpleNamespace(active=1)
-    mobase.ReleaseType = types.SimpleNamespace(ALPHA=0)
+    mobase.ReleaseType = types.SimpleNamespace(ALPHA=0, FINAL=3)
     sys.modules["mobase"] = mobase

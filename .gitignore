@@ -2,7 +2,7 @@ __pycache__/
 *.pyc
 *.zip
 images/
-nexus_description.bbc
+nexus_*
 
 # Claude Code project instructions: local, never shared
 CLAUDE.md

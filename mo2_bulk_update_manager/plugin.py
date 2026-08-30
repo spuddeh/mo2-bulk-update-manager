@@ -46,7 +46,7 @@ class BulkUpdateManagerPlugin(mobase.IPluginTool):
 
     def version(self) -> mobase.VersionInfo:
         major, minor, patch = (int(x) for x in VERSION.split("."))
-        return mobase.VersionInfo(major, minor, patch, mobase.ReleaseType.ALPHA)
+        return mobase.VersionInfo(major, minor, patch, mobase.ReleaseType.FINAL)
 
     def displayName(self) -> str:
         return PLUGIN_NAME
