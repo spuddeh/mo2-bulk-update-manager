@@ -11,13 +11,13 @@ sends downloads straight to MO2's Downloads tab.
 ## Why
 
 MO2 can tell you a mod has an update, but on a large modlist you have to force the check, wait, and
-then still open the Nexus page in a browser to get the file. Nothing tells you when a mod you rely
-on has quietly been pulled from Nexus.
+then still open the Nexus page in a browser to get the file. And if a mod you rely on is quietly pulled from Nexus,
+you are unlikely to find out until you go looking for it.
 
 - **Batched, not one request per mod.** A routine check on a 1071-mod, 908-page profile costs about
   13 Nexus requests.
 - **Compares update chains, not page versions**, so it catches updates MO2's own check misses.
-- **Flags delisted mods**, which MO2 does not report at all.
+- **Flags delisted mods**, and separates a removed page from one that is only hidden.
 - **Knows what you already downloaded**, so nothing is fetched twice.
 - **Notes and ignore overrides**, because "why did I skip this one?" is the question you cannot
   answer six months later.
