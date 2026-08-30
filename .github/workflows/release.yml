@@ -1,0 +1,220 @@
+name: Release
+
+# Publishes a release to GitHub and to Nexus (nexusmods.com/site/mods/2231).
+#
+# This is the single-artifact cousin of the canonical pipeline in
+# MyMods/_shared/release/release.yml, NOT a copy of it. That one is manifest-driven because a
+# CP2077 mod repo ships a mod plus its presets into game trees; this repo ships one folder into
+# MO2's plugins directory, so the manifest, the artifact id and the "<artifact>-v<version>" tag
+# convention would all be ceremony around a single row. The facts that pipeline paid for are
+# carried over: the file id in a repository variable, the beta.10 pin, the body split, and the
+# changelog endpoint appending rather than replacing.
+#
+# Trigger by publishing a GitHub Release tagged "v<version>", e.g. v0.15.3.
+#
+# What lands on Nexus:
+#   - the FILE: the zip, its version, display name, category and description.
+#   - the PAGE version, because this repo owns its mod page.
+#   - the PAGE changelog, appended from the release body.
+#   - the PAGE description is still MANUAL. Nothing here touches it. It lives in
+#     nexus_description.bbc, which is gitignored.
+#
+# THE FIRST NEXUS UPLOAD MUST BE DONE BY HAND, and it has been: 0.15.2, 2026-08-30. A file id does
+# not exist until a page has one file on it, which is why the id is not in this repo.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version string (e.g. 0.15.3)"
+        required: true
+      tag:
+        description: "Existing release tag to attach the zip to (blank skips the GitHub asset upload)"
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || github.event.inputs.tag || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Skips a GitHub-only release, marked invisibly in its body.
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.release.body, '<!-- skip-nexus -->') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VER="${{ github.event.inputs.version }}"
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${{ github.event.release.tag_name }}"
+            VER="${TAG#v}"
+          fi
+          if [ -z "$VER" ]; then
+            echo "::error::Could not resolve a version (tag '$TAG'). Expected 'v<version>'."
+            exit 1
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Resolved version='$VER' tag='$TAG'"
+
+      # MO2 reads the version out of _version.py and Nexus reads it off the tag. A tag that
+      # disagrees ships a file whose page version and in-MO2 version differ, which is only ever
+      # noticed by the person trying to work out which build they are running.
+      - name: Check the tag matches _version.py
+        run: |
+          IN_CODE="$(sed -n 's/^VERSION = "\(.*\)"$/\1/p' mo2_bulk_update_manager/_version.py)"
+          if [ "$IN_CODE" != "${{ steps.meta.outputs.version }}" ]; then
+            echo "::error::_version.py says '$IN_CODE' but the release is '${{ steps.meta.outputs.version }}'. Bump one to match the other."
+            exit 1
+          fi
+          echo "_version.py agrees: $IN_CODE"
+
+      # A REPOSITORY VARIABLE, not a secret. The id is public, it authorizes nothing on its own,
+      # and masking it in the log would only make a wrong id harder to diagnose. Read it off the
+      # mod page: Files tab > API Info, where Nexus labels it "Group ID". The v1 API's file_id is
+      # a different id space wearing the same name, and the wrong value looks entirely plausible.
+      - name: Check the Nexus file id is set
+        id: fid
+        env:
+          FILE_ID: ${{ vars.NEXUS_FILE_ID }}
+        run: |
+          if [ -z "$FILE_ID" ]; then
+            echo "::error::Repository variable NEXUS_FILE_ID is not set."
+            echo "::error::Read the Group ID off the mod page (Files tab > API Info) and set it under"
+            echo "::error::Settings > Secrets and variables > Actions > Variables."
+            exit 1
+          fi
+          echo "file_id=$FILE_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Build zip
+        id: zip
+        run: |
+          ZIP="MO2-Bulk-Update-Manager-${{ steps.meta.outputs.version }}.zip"
+          # The plugin folder sits at the zip root, because that is what gets dropped into MO2's
+          # plugins directory. No staging: the repo layout is already the install layout.
+          zip -r -X "$ZIP" mo2_bulk_update_manager -x '*/__pycache__/*' '*.pyc'
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "Built $ZIP:"
+          unzip -l "$ZIP"
+
+      - name: Attach zip to GitHub release
+        if: ${{ github.event_name == 'release' || github.event.inputs.tag != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ steps.meta.outputs.tag }}" "${{ steps.zip.outputs.zip }}" --clobber
+
+      # The release body feeds two Nexus fields, split by one marker:
+      #
+      #   <text>                                              -> the page CHANGELOG
+      #   <text> <!-- nexus-description-end --> <text>
+      #      ^ the FILE description (<=255 chars)                 ^ the page CHANGELOG
+      #
+      # THE CHANGELOG ENDPOINT APPENDS, IT DOES NOT REPLACE, and nothing here can delete. So the
+      # changelog goes only on a `release: published` event, never on a workflow_dispatch, which is
+      # by definition a re-run. Republishing a release re-fires the event and WILL double-post it;
+      # fix that on the page by hand.
+      - name: Split release body into file description and page changelog
+        id: desc
+        env:
+          BODY: ${{ github.event.release.body }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          MARKER='<!-- nexus-description-end -->'
+          clean() { sed 's/<!--[^>]*-->//g' | sed -e '/./,$!d' | tac | sed -e '/./,$!d' | tac; }
+
+          DESC=""
+          if printf '%s' "$BODY" | grep -qF "$MARKER"; then
+            DESC="$(printf '%s' "$BODY" | awk -v m="$MARKER" '{i=index($0,m); if(i){if(i>1)print substr($0,1,i-1); exit} print}' | clean)"
+            CHANGELOG="$(printf '%s\n' "$BODY" | awk -v m="$MARKER" 'index($0,m){f=1; next} f' | clean)"
+          else
+            CHANGELOG="$(printf '%s\n' "$BODY" | clean)"
+          fi
+
+          if [ -n "$DESC" ]; then
+            if [ "$(printf '%s' "$DESC" | wc -m)" -gt 255 ]; then
+              DESC="$(printf '%s' "$DESC" | cut -c1-250)"
+              DESC="${DESC% *}..."
+              echo "::warning::Nexus file description exceeded 255 chars; truncated at a word boundary. Shorten the text before '$MARKER'."
+            fi
+            echo "Nexus file description set ($(printf '%s' "$DESC" | wc -m) chars)."
+          else
+            echo "No '$MARKER' content found; leaving the Nexus file description unset."
+          fi
+
+          if [ "$EVENT" != "release" ]; then
+            echo "Event is '$EVENT', not 'release'; not posting a changelog (the endpoint appends, so a re-run would duplicate it)."
+            CHANGELOG=""
+          elif [ -n "$CHANGELOG" ]; then
+            echo "Nexus changelog set ($(printf '%s' "$CHANGELOG" | wc -m) chars)."
+          else
+            echo "Release body is empty after the split; no changelog to post."
+          fi
+
+          { echo "value<<__DESC_EOF__"; printf '%s\n' "$DESC"; echo "__DESC_EOF__"; } >> "$GITHUB_OUTPUT"
+          { echo "changelog<<__CL_EOF__"; printf '%s\n' "$CHANGELOG"; echo "__CL_EOF__"; } >> "$GITHUB_OUTPUT"
+
+      # The changelog endpoint wants the mod's INTERNAL id, which is not 2231, the number in the
+      # page URL. 2231 is the game-scoped id; the internal id is the `data.id` that comes back from
+      # looking it up. Two id spaces, same trap as the file id, so it is resolved at release time
+      # rather than stored: a stored copy of the wrong one looks entirely plausible.
+      #
+      # This warns and skips rather than failing. By the time it runs the file has uploaded, and a
+      # missing changelog is a page edit, not a broken release.
+      - name: Resolve the Nexus mod id for the changelog
+        id: modid
+        if: ${{ steps.desc.outputs.changelog != '' }}
+        env:
+          NEXUS_API_KEY: ${{ secrets.NEXUSMODS_API_KEY }}
+        run: |
+          skip() { echo "::warning::$1 Skipping the Nexus changelog; add it to the mod page by hand."; echo "mod_id=" >> "$GITHUB_OUTPUT"; exit 0; }
+
+          RESP="$(curl -sS -w '\n%{http_code}' -H "apikey: $NEXUS_API_KEY" -H "Accept: application/json" \
+                    "https://api.nexusmods.com/v3/games/site/mods/2231")" || skip "Mod lookup failed to connect."
+          CODE="$(printf '%s' "$RESP" | tail -n1)"
+          PAYLOAD="$(printf '%s' "$RESP" | sed '$d')"
+          if [ "$CODE" != "200" ]; then
+            skip "Mod lookup returned HTTP $CODE. The 'site' domain may not be addressable this way."
+          fi
+
+          MODID="$(printf '%s' "$PAYLOAD" | jq -r '.data.id // empty')"
+          if [ -z "$MODID" ]; then
+            skip "Mod lookup returned no 'data.id'."
+          fi
+          echo "Resolved page 2231 to mod id $MODID"
+          echo "mod_id=$MODID" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to Nexus Mods
+        uses: Nexus-Mods/upload-action@v1.0.0-beta.10
+        with:
+          api_key: ${{ secrets.NEXUSMODS_API_KEY }}
+          file_id: ${{ steps.fid.outputs.file_id }}
+          filename: ${{ steps.zip.outputs.zip }}
+          version: ${{ steps.meta.outputs.version }}
+          display_name: MO2 Bulk Update Manager ${{ steps.meta.outputs.version }}
+          description: ${{ steps.desc.outputs.value }}
+          category: main
+          # Archiving is not the same as moving to old files. An archived file cannot be
+          # downloaded; an old one can. Superseding already moves the previous file to OLD FILES,
+          # so setting this true would only take away a download someone still wants.
+          archive_existing_version: false
+          allow_mod_manager_download: true
+          # An MO2 plugin does not install through a mod manager. Offering one would put a "Mod
+          # manager download" button on a file that has to be extracted into MO2's plugins folder.
+          primary_mod_manager_download: false
+          show_requirements_pop_up: false
+          update_mod_version: true
+          # Both or neither: the action hard-fails on a changelog with no mod_id, and the resolve
+          # step returns an empty id rather than failing, so blank the text to match.
+          mod_id: ${{ steps.modid.outputs.mod_id }}
+          changelog: ${{ steps.modid.outputs.mod_id != '' && steps.desc.outputs.changelog || '' }}
