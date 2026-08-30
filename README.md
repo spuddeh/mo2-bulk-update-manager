@@ -2,27 +2,23 @@
 
 **On Nexus: [nexusmods.com/site/mods/2231](https://www.nexusmods.com/site/mods/2231)**
 
-Checks every Nexus-backed mod in your MO2 profile in one pass. Tells you which have updates, which
-have been **hidden or removed from Nexus**, shows the changelog and file list side by side, and
-sends downloads straight to MO2's Downloads tab.
+Checks every Nexus mod in your MO2 profile in one pass. Shows you which ones have updates, which
+ones have been **hidden or removed from Nexus**, and sends the downloads straight to MO2.
 
-> **Alpha**, and built with an LLM (Claude). Run by one person, on three MO2 instances, on Cyberpunk
-> 2077 and Starfield only. The code has been reviewed and the Nexus-facing half tested against the
-> live API.
+You can install them from the tool as well. Tick the mods you want and hit **Install selected**, and
+it downloads and installs them without you touching the Downloads tab.
 
 ## Why
 
-MO2 can tell you a mod has an update, but on a large modlist you have to force the check, wait, and
-then still open the Nexus page in a browser to get the file. And if a mod you rely on is quietly pulled from Nexus,
-you are unlikely to find out until you go looking for it.
+MO2 can tell you a mod has an update, but most of the time you have to force the check, wait for it,
+then open the Nexus page in a browser to get the file. And nothing makes it clear when a mod has
+been pulled from Nexus.
 
-- **Batched, not one request per mod.** A routine check on a 1071-mod, 908-page profile costs about
-  13 Nexus requests.
-- **Compares update chains, not page versions**, so it catches updates MO2's own check misses.
-- **Flags delisted mods**, and separates a removed page from one that is only hidden.
-- **Knows what you already downloaded**, so nothing is fetched twice.
-- **Notes and ignore overrides**, because "why did I skip this one?" is the question you cannot
-  answer six months later.
+- **It checks in batches.** A scan of a 1071 mod profile costs about 13 Nexus requests.
+- **It follows update chains** instead of comparing version numbers, so it finds updates MO2 misses.
+- **It flags mods that are gone** from Nexus, and tells a removed page from a hidden one.
+- **It knows what you have already downloaded**, so nothing is fetched twice.
+- **It keeps your notes**, so you can record why you skipped a mod.
 
 ## Install
 
@@ -34,64 +30,100 @@ Copy the `mo2_bulk_update_manager/` folder into your MO2 `plugins/` directory, s
 
 Restart MO2. It appears under **Tools > MO2 Bulk Update Manager**.
 
-**Requires** MO2 **2.5.3beta12** or later, a Nexus account signed in to MO2, and Windows
-(credentials come from the Windows Credential Manager). Nothing else to set up. That MO2 build is
-not a public release and comes from the **dev-builds** channel on the [Mod Organizer 2 Discord](https://discord.gg/ewUVAqyrQX);
-**2.5.2** is untested. See [Installing and upgrading](docs/install.md).
+It was built against MO2 **2.5.3beta12**, which is not a public release. You get it from the
+**dev-builds** channel on the [Mod Organizer 2 Discord](https://discord.gg/ewUVAqyrQX). It may well
+run on **2.5.2**, the current release, but nobody has tried it.
 
-> **Upgrading from a folder called `mo2_update_manager`?** Delete it, or MO2 loads the plugin twice.
-> See [Installing and upgrading](docs/install.md).
+You also need a Nexus account already signed in to MO2, and Windows, because the credentials come
+from the Windows Credential Manager. There is no API key to paste in and nothing you have to set up.
+
+To update the plugin, delete the old folder and drop the new one in its place. See
+[Installing and upgrading](docs/install.md).
 
 ## Using it
 
-1. Open the tool. A quick scan starts automatically.
-2. Rows are grouped by outcome. Type in the **Filter** box to narrow a thousand mods to one.
+1. Open the tool. It starts scanning on its own.
+2. Rows are grouped by result. Use the **Filter** box to find one mod in a thousand.
 3. Click a mod to read its changelog and file list.
-4. Tick what you want, then **Download selected** or **Install selected**.
-5. Rows follow their downloads on their own, with no rescan.
+4. Tick what you want, then hit **Download selected** or **Install selected**.
+5. Rows update themselves as the downloads finish. No rescan needed.
 
-**Right-click a row** to act on that one mod without ticking anything: download it, install it, open
-its Nexus page, write a note, or deal with MO2's ignore flag. **Right-click in the Files tab** to
-act on one exact file.
+**Right-click a row** to handle one mod on its own: download it, install it, open its Nexus page,
+leave a note, or change MO2's ignore flag. **Right-click in the Files tab** to do the same for one
+exact file.
 
-The menu says what will actually happen. If the archive is already on disk it offers **Install
-`<file>` from disk** and calls the download **Re-download**; if it is not, it just says
-**Download**. Installing from disk works on archives MO2 hid after an earlier install, so there is
-no trip to the Downloads tab to unhide anything.
+The menu tells you what it is going to do. If you already have the archive it offers **Install
+`<file>` from disk**, and the download becomes **Re-download**. That works even on archives MO2 hid
+after installing them, so you never have to go digging in the Downloads tab.
+
+## The first scan is the slow one
+
+Nexus has no batch endpoint for update chains, so the first scan has to ask about every mod one at a
+time. On a 900 page profile that is roughly 900 API requests, and it will take a while. After that
+it is cached, and a normal scan costs about 13 requests.
+
+Nexus allows Premium accounts 2000 requests an hour, and free accounts 100. On a free account the
+first scan will hit that limit and you will need to pick it up again over a few hours. Progress is
+saved as it goes, so nothing is ever fetched twice. The tool shows how much of your allowance is
+left and stops before it runs you out.
+
+## The result groups
 
 | Group | What it means |
 | --- | --- |
-| **Updates available** | A newer file exists on Nexus and you do not have it |
+| **Updates available** | A newer file is on Nexus and you do not have it |
 | **Downloaded, waiting to be installed** | The newer archive is already in your downloads folder |
 | **Downloading** | Queued with MO2. The row moves on by itself |
-| **Superseded on Nexus, your call** | Nexus retired your file and no successor can be determined. [Why](docs/how-updates-are-detected.md#when-an-update-chain-dead-ends) |
-| **No longer on Nexus** | The page 404s or reports a removed status |
-| **Hidden or unavailable** | The page exists but is hidden or under moderation |
-| **Ignored in MO2** | You used MO2's *Ignore update* on exactly this version |
+| **Superseded on Nexus, your call** | Nexus retired your file and there is no clear replacement. [Why](docs/how-updates-are-detected.md#when-an-update-chain-dead-ends) |
+| **No longer on Nexus** | The page is gone |
+| **Hidden or unavailable** | The page is there but hidden or under moderation |
+| **Ignored in MO2** | You used MO2's *Ignore update* on this exact version |
 | **Could not be checked** | The request failed. The reason is in the Notes column |
-| **Not checked** | No result and no cached record. [Why](docs/how-updates-are-detected.md#when-mo2-never-recorded-a-file-id) |
-| **Up to date** | Nothing newer in your update chain |
+| **Not checked** | No result and nothing cached. [Why](docs/how-updates-are-detected.md#when-mo2-never-recorded-a-file-id) |
+| **Up to date** | Nothing newer in the chain |
+
+## Settings
+
+It works out of the box. If you want to change how it behaves, the settings are in MO2 under
+**Settings > Plugins > MO2 Bulk Update Manager**. Every one of them is listed in
+[Settings and limits](docs/settings.md).
+
+## Free Nexus accounts
+
+Nexus only hands out direct download links to Premium accounts, so on a free account the downloads
+will not queue. Everything else should still work: the scan, the changelogs, the file lists, the
+delisting checks, the notes, and installing archives you already have.
+
+**Nobody has run it on a free account yet**, so that is expectation, not experience. See
+[Free accounts](docs/free-accounts.md).
+
+## It is built around how I mod
+
+I wrote this for the way I install mods. It assumes you keep a big modlist, that you like to look
+over a batch of updates and queue them together, and that your archives live in MO2's downloads
+folder. If you install by hand from files kept somewhere else, or grab updates one at a time as you
+notice them, it will not do much for you.
+
+That is a starting point, not a rule. **If it does not fit how you work, open an issue.** I am happy
+to take suggestions and I would rather hear about a habit I did not think of.
 
 ## Documentation
 
 | | |
 | --- | --- |
 | [Installing and upgrading](docs/install.md) | Requirements, the old folder name, how it reads your Nexus login |
-| [Free accounts](docs/free-accounts.md) | What changes without Nexus Premium, and why. **Untested, read before relying on it** |
-| [How updates are detected](docs/how-updates-are-detected.md) | Update chains, multi-file pages, dead ends, and what the plugin does when MO2 has no file id |
+| [How updates are detected](docs/how-updates-are-detected.md) | Update chains, pages with several files, dead ends, and what it does when MO2 has no file id |
+| [Settings and limits](docs/settings.md) | Every setting, and the things it deliberately does not do |
 | [Ignore overrides and notes](docs/ignore-and-notes.md) | Overruling MO2's *Ignore update*, and recording why you left a mod alone |
-| [Settings and limits](docs/settings.md) | Every setting, and the things this deliberately does not do |
+| [Free accounts](docs/free-accounts.md) | What changes without Premium, and why. **Untested, read before relying on it** |
+| [Releasing](RELEASING.md) | How a release reaches GitHub and Nexus |
 | [Development](docs/development.md) | The three offline harnesses and what each cannot see |
 
-## Is this built for you?
+## How it was built
 
-It was written to fit **one person's habits**, and those are baked into the defaults. It assumes you
-keep a large modlist, that MO2 has the file id for most of your mods, that you want to review a
-batch of updates and queue them together, and that your archives live in MO2's own downloads folder.
-If you install by hand from files kept elsewhere, or update one mod at a time as you notice it, most
-of this will not help you.
-
-**It has never been tested without a Nexus Premium account.** See [Free accounts](docs/free-accounts.md).
+This plugin was written with the help of an AI coding assistant. The code has been reviewed and the
+Nexus side of it has been tested against the live API, on three MO2 instances across two games. You
+should know that before you install it, and decide for yourself.
 
 ## Licence
 
