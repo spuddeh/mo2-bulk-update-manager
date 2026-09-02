@@ -232,8 +232,8 @@ def nexus_domain(organizer: mobase.IOrganizer, game_name: str) -> str:
     """Map an MO2 game short name to its Nexus domain, '' when unknown.
 
     Returned in whatever case the game plugin reports it, because that is what
-    the API is given. ``page_url`` is where the website's lower-case
-    requirement is met, which is exactly where MO2 meets it too.
+    the API is given. ``page_url`` lower-cases it for the website, at the same
+    point MO2 does.
     """
     if not game_name:
         game = organizer.managedGame()
