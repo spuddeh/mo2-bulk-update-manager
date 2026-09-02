@@ -80,7 +80,6 @@ class ModEntry:
         "mod_id",
         "domain",
         "installed_version",
-        "url",
         "enabled",
         "status",
         "latest_version",
@@ -124,7 +123,6 @@ class ModEntry:
         self.mod_id = mod.nexusId()
         self.domain = domain
         self.installed_version = mod.version().canonicalString()
-        self.url = mod.url()
         self.enabled = True
         self.status = self.UNCHECKED
         self.latest_version = ""
@@ -170,9 +168,19 @@ class ModEntry:
 
     @property
     def page_url(self) -> str:
-        if self.url:
-            return self.url
-        return f"https://www.nexusmods.com/{self.domain}/mods/{self.mod_id}"
+        """The mod's Nexus page, derived the way MO2 derives it.
+
+        ``NexusInterface::getModURL`` builds this from the mod id and the game
+        name and lower-cases the domain, and MO2's own "Visit on Nexus" uses
+        nothing else. In particular it does not use ``IModInterface::url()``:
+        that is the *custom* URL from the Nexus tab, which MO2 ignores whenever
+        the mod id is valid (``modinforegular.cpp:157``) because the value is
+        unreliable -- the fomod installer has been known to write a previous
+        installation's URL into it, and opening the Nexus tab bakes in whatever
+        case ``gameNexusName()`` reported. Every mod that gets this far has a
+        valid mod id, so deriving is both simpler and what MO2 would show.
+        """
+        return f"https://www.nexusmods.com/{self.domain.lower()}/mods/{self.mod_id}"
 
     @property
     def key(self) -> tuple[str, int]:
@@ -221,7 +229,12 @@ def read_installed_file_ids(mod_path: str) -> list[int]:
 
 
 def nexus_domain(organizer: mobase.IOrganizer, game_name: str) -> str:
-    """Map an MO2 game short name to its Nexus domain, '' when unknown."""
+    """Map an MO2 game short name to its Nexus domain, '' when unknown.
+
+    Returned in whatever case the game plugin reports it, because that is what
+    the API is given. ``page_url`` is where the website's lower-case
+    requirement is met, which is exactly where MO2 meets it too.
+    """
     if not game_name:
         game = organizer.managedGame()
         if game is None:
