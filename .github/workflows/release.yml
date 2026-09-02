@@ -209,9 +209,10 @@ jobs:
           # so setting this true would only take away a download someone still wants.
           archive_existing_version: false
           allow_mod_manager_download: true
-          # An MO2 plugin does not install through a mod manager. Offering one would put a "Mod
-          # manager download" button on a file that has to be extracted into MO2's plugins folder.
-          primary_mod_manager_download: false
+          # An MO2 plugin is extracted into MO2's plugins folder rather than installed by a
+          # manager, so nothing consumes this button today. It stays enabled and pointed at this
+          # file so that a manager which does support plugins takes the current release.
+          primary_mod_manager_download: true
           show_requirements_pop_up: false
           update_mod_version: true
           # Both or neither: the action hard-fails on a changelog with no mod_id, and the resolve

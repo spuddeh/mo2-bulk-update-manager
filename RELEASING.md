@@ -31,10 +31,17 @@ The body feeds two Nexus fields, split by one marker:
 ```text
 A one-line summary of this file, 255 characters at most.
 <!-- nexus-description-end -->
-The mod page changelog entry, one bullet per line.
+One changelog entry per line, no bullet marker.
 ```
 
 With no marker the whole body becomes the changelog and the file description is left unset.
+
+Both fields are read on the mod page, not in a repo, so keep them shorter than a commit message.
+The summary is one sentence naming what changed for a user. Each changelog line is one change,
+stated once; the reasoning behind it belongs in the commit.
+
+**Write changelog lines without a leading `-`.** Nexus renders each line as a quote and supplies
+its own marker, so a dash arrives as a second one.
 
 **The changelog endpoint appends, it does not replace.** Re-publishing a release fires the event
 again and posts the entry a second time; fix that on the page by hand. A `workflow_dispatch` never
