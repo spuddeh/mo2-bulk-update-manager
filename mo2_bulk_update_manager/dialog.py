@@ -2311,8 +2311,8 @@ def ignore_is_spent(entry) -> bool:
     bug this answers.
 
     A flag the user has overridden with 'Download ... anyway' is *not* spent:
-    it would still apply if the override were dropped, which is exactly what
-    'Respect MO2's ignore flag again' does.
+    it would still apply if the override were dropped, and 'Respect MO2's
+    ignore flag again' drops it.
     """
     if not (entry.ignored_version or "").strip():
         return False

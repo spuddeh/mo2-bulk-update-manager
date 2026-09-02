@@ -194,9 +194,9 @@ def read_installed_file_ids(mod_path: str) -> list[int]:
     """Pull the Nexus file ids out of a mod's ``meta.ini``.
 
     MO2 records them under ``[installedFiles]`` as ``<n>\\fileid=<id>``. There
-    is no accessor for this on ``IModInterface``, and the value is worth having:
-    it identifies the exact upload a mod came from, which is the only reliable
-    way to tell two downloads from the same Nexus page apart.
+    is no accessor for this on ``IModInterface``. The value identifies the exact
+    upload a mod came from, and is the only reliable way to tell two downloads
+    from the same Nexus page apart.
     """
     if not mod_path:
         return []
