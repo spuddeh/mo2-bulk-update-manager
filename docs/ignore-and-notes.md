@@ -85,7 +85,7 @@ Right-click any mod and choose **Add a note**. What you type comes back in three
   tab.
 - **In the filter.** Searching `cet` finds every mod you noted as needing Cyber Engine Tweaks,
   whatever they are called.
-- **In the confirmation dialog**, indented under the mod, when you tick it for download or install.
+- **In the confirmation dialog**, in its own **Note** column, when you tick it for download or install.
 
 The last one is where it earns its keep. MO2's ignore flag covers one version, so the day the author
 ships 2.1 the mod reappears under *Updates available* like any other, and the last screen before it

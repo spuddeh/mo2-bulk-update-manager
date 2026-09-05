@@ -210,8 +210,7 @@ check(
     dialog._note_label(FakeEntry(note="needs CET 2.0\n\n1.9 still works."))
     == "\u270e needs CET 2.0 1.9 still works.",
 )
-long_note = "word " * 60
-labelled = dialog._note_label(FakeEntry(note=long_note))
+labelled = dialog._note_label(FakeEntry(note="word " * 60))
 check(
     "shortens a long note to keep the column narrow",
     len(labelled) <= dialog._NOTE_LIMIT + 2 and labelled.endswith("\u2026"),
@@ -239,22 +238,28 @@ check(
     == "\u270e needs CET   Ignored in MO2.",
 )
 
-print("_note_block")
-check("nothing without a note", dialog._note_block(FakeEntry()) == "")
+print("_note_line")
+check("nothing without a note", dialog._note_line(FakeEntry()) == "")
 check(
-    "indented under its mod",
-    dialog._note_block(FakeEntry(note="needs CET 2.0"))
-    == "\n      \u270e needs CET 2.0",
+    "marks the user's own words",
+    dialog._note_line(FakeEntry(note="needs CET 2.0")) == "\u270e needs CET 2.0",
+)
+long_note = "word " * 60
+check(
+    "keeps the whole note, unlike the row",
+    dialog._note_line(FakeEntry(note=long_note)).endswith("word")
+    and len(dialog._note_line(FakeEntry(note=long_note))) > dialog._NOTE_LIMIT,
+    dialog._note_line(FakeEntry(note=long_note)),
 )
 check(
-    "keeps every line, unlike the row",
-    dialog._note_block(FakeEntry(note="needs CET 2.0\n1.9 still works."))
-    == "\n      \u270e needs CET 2.0\n        1.9 still works.",
+    "flattens a multi-line note onto one line",
+    dialog._note_line(FakeEntry(note="needs CET 2.0\n1.9 still works."))
+    == "\u270e needs CET 2.0 1.9 still works.",
 )
 check(
-    "dates a stale note in the dialog too",
-    dialog._note_block(FakeEntry(note="needs CET", latest="2.1", note_version="2.0"))
-    == "\n      \u270e on 2.0 needs CET",
+    "dates a stale note in the confirmation too",
+    dialog._note_line(FakeEntry(note="needs CET", latest="2.1", note_version="2.0"))
+    == "\u270e on 2.0 needs CET",
 )
 
 print("_matches")
@@ -472,6 +477,47 @@ check(
         dialog.fit_to_screen(w, h)[0] <= max(w, 1040)
         and dialog.fit_to_screen(w, h)[1] <= max(h, 640)
         for w, h in ((1920, 1040), (2560, 1400), (3840, 2120), (1366, 728))
+    ),
+)
+
+# -- confirmation size -------------------------------------------------------
+#
+# The bug this answers: a plan of 906 archives grew a QMessageBox past the
+# bottom of the screen, taking its own buttons with it. Whatever the list
+# holds, the window has to stay inside the screen.
+
+print("fit_confirmation")
+check(
+    "a short list gets the size it asks for",
+    dialog.fit_confirmation(2560, 1400, 900, 400) == (900, 400),
+    dialog.fit_confirmation(2560, 1400, 900, 400),
+)
+check(
+    "a small list is still opened at a readable size",
+    dialog.fit_confirmation(2560, 1400, 200, 100) == (560, 320),
+    dialog.fit_confirmation(2560, 1400, 200, 100),
+)
+check(
+    "906 rows do not push the buttons off a 1440p screen",
+    dialog.fit_confirmation(2560, 1400, 1200, 180 + 22 * 906) == (1200, 924),
+    dialog.fit_confirmation(2560, 1400, 1200, 180 + 22 * 906),
+)
+check(
+    "nor off a 1366x768 laptop, where the ceiling beats the floor",
+    all(
+        value <= limit
+        for value, limit in zip(
+            dialog.fit_confirmation(1366, 728, 1200, 180 + 22 * 906), (1366, 728)
+        )
+    ),
+    dialog.fit_confirmation(1366, 728, 1200, 180 + 22 * 906),
+)
+check(
+    "never larger than the screen, whatever the list asks for",
+    all(
+        dialog.fit_confirmation(w, h, 99999, 99999)[0] <= w
+        and dialog.fit_confirmation(w, h, 99999, 99999)[1] <= h
+        for w, h in ((1366, 728), (1920, 1040), (2560, 1400), (3840, 2120))
     ),
 )
 

@@ -19,6 +19,7 @@ try:
     )
     from PyQt5.QtWidgets import (
         QAbstractItemView,
+        QApplication,
         QCheckBox,
         QDialog,
         QHBoxLayout,
@@ -49,6 +50,7 @@ except ImportError:
     )
     from PyQt6.QtWidgets import (
         QAbstractItemView,
+        QApplication,
         QCheckBox,
         QDialog,
         QHBoxLayout,
@@ -257,6 +259,139 @@ def _size(kb) -> str:
     return f"{kb:.0f} KB"
 
 
+# The smallest a confirmation is allowed to be, and the share of the screen it
+# is allowed to grow to. Both matter for the same reason: the list inside it is
+# as long as the user's plan, which on a large modlist is hundreds of rows.
+_CONFIRM_MIN_SIZE = (560, 320)
+_CONFIRM_SCREEN_SHARE = (0.62, 0.66)
+# Roughly one table row, for guessing a height before the tree has been laid
+# out. Only the guess is approximate; the cap above is not.
+_CONFIRM_ROW_HEIGHT = 22
+
+# How often to check whether MO2 has opened an installer over this window.
+# Short enough that the FOMOD dialog is in front before the user has looked
+# away, long enough to cost nothing across a batch of several hundred.
+_INSTALLER_FOCUS_MS = 120
+
+# The columns every "which files" confirmation shows, so the download plan and
+# the free-account page list read as the same table.
+_FILE_HEADERS = ("Mod", "File", "Version", "Size", "Note")
+
+
+class ConfirmListDialog(QDialog):
+    """A confirmation whose list scrolls instead of growing the window.
+
+    QMessageBox lays its text out as a single block and sizes itself to fit it,
+    so a plan covering 906 archives pushed its own buttons off the bottom of
+    the screen and left the user nothing to click. Here the question is a
+    summary line, the rows go in a table that scrolls, and the window is capped
+    to the screen it opens on, so the number of rows stops mattering.
+
+    ``choices`` are ``(key, text)`` pairs, left to right. `choice` is the key
+    of the button that was pressed, or the empty string if the window was
+    closed, so a caller with three buttons reads the same way as one with two.
+    """
+
+    def __init__(
+        self,
+        parent,
+        title: str,
+        summary: str,
+        headers,
+        rows,
+        footer: str = "",
+        choices=(),
+        default: str = "",
+    ):
+        super().__init__(parent)
+        self._choice = ""
+        self.setWindowTitle(title)
+        self.setWindowIcon(QIcon(_ICON_PATH))
+        self.setSizeGripEnabled(True)
+
+        rows = list(rows)
+        layout = QVBoxLayout(self)
+
+        heading = QLabel(summary)
+        heading.setWordWrap(True)
+        layout.addWidget(heading)
+
+        self._tree = QTreeWidget()
+        self._tree.setHeaderLabels(list(headers))
+        self._tree.setRootIsDecorated(False)
+        self._tree.setUniformRowHeights(True)
+        self._tree.setAlternatingRowColors(True)
+        self._tree.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
+        _make_scrollable(self._tree)
+        for row in rows:
+            values = [str(value or "") for value in row]
+            item = QTreeWidgetItem(values)
+            for column, value in enumerate(values):
+                # The cells hold whole mod names, file names and notes, and the
+                # columns are sized to content rather than stretched, so a wide
+                # row scrolls. The tooltip is for the row that is off to the
+                # right rather than for one that was shortened.
+                item.setToolTip(column, value)
+            self._tree.addTopLevelItem(item)
+        _autofit(self._tree)
+        layout.addWidget(self._tree, 1)
+
+        if footer:
+            note = QLabel(footer)
+            note.setWordWrap(True)
+            layout.addWidget(note)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        for key, text in choices:
+            button = QPushButton(text)
+            button.clicked.connect(lambda _checked=False, k=key: self._pick(k))
+            if key == default:
+                button.setDefault(True)
+                button.setAutoDefault(True)
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+
+        self._size_to_screen(len(rows))
+
+    def choice(self) -> str:
+        return self._choice
+
+    def _pick(self, key: str) -> None:
+        self._choice = key
+        self.accept()
+
+    def _size_to_screen(self, row_count: int) -> None:
+        """Open wide enough for the table, and never wider than the screen."""
+        width = sum(
+            self._tree.columnWidth(column)
+            for column in range(self._tree.columnCount())
+        ) + 80
+        height = 180 + _CONFIRM_ROW_HEIGHT * max(row_count, 4)
+
+        screen = None
+        parent = self.parentWidget()
+        if parent is not None:
+            screen = parent.screen()
+        if screen is None:
+            screen = self.screen() or QGuiApplication.primaryScreen()
+        rect = screen.availableGeometry() if screen is not None else None
+        if rect is None:
+            self.resize(max(width, _CONFIRM_MIN_SIZE[0]), max(height, _CONFIRM_MIN_SIZE[1]))
+            return
+
+        width, height = fit_confirmation(
+            rect.width(), rect.height(), width, height
+        )
+        self.resize(width, height)
+        self.move(
+            rect.x() + max(0, (rect.width() - width) // 2),
+            rect.y() + max(0, (rect.height() - height) // 2),
+        )
+
+
 class BulkUpdateManagerDialog(QDialog):
     def __init__(self, organizer: mobase.IOrganizer, plugin_name: str, parent=None):
         super().__init__(parent)
@@ -281,6 +416,9 @@ class BulkUpdateManagerDialog(QDialog):
         self._in_flight: dict = {}
         self._refresh_pending = False
         self._closed = False
+        # The installer window most recently brought to the front, so it is
+        # raised once rather than on every tick. See _raise_installer_window.
+        self._raised_window = None
         # The row whose changelog and file list are wanted once the selection
         # stops moving. See _on_selection_changed.
         self._pending_details: Optional[ModEntry] = None
@@ -1853,69 +1991,80 @@ class BulkUpdateManagerDialog(QDialog):
         if not targets:
             return
 
-        lines = "\n".join(
-            f"  {e.display_name}  ->  {e.download.file_name}" + _note_block(e)
-            for e in targets
-        )
-        answer = QMessageBox.question(
-            self,
+        choice = self._confirm_list(
             "Install downloaded archives",
-            f"Install {len(targets)} archive(s) already in your downloads folder?\n\n"
-            f"{lines}\n\nMO2 runs its normal installer for each one, so any FOMOD "
-            "will still ask you the usual questions.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
+            f"Install {len(targets)} archive(s) already in your downloads folder?",
+            ("Mod", "Archive", "Note"),
+            [(e.display_name, e.download.file_name, _note_line(e)) for e in targets],
+            footer=(
+                "MO2 runs its normal installer for each one, so any FOMOD will "
+                "still ask you the usual questions."
+            ),
+            choices=(("install", "Install"), ("cancel", "Cancel")),
+            default="install",
         )
-        if answer != QMessageBox.StandardButton.Yes:
+        if choice != "install":
             return
 
         hide_after = self._hide_downloads_after_install()
         installed, hidden, failed = 0, 0, []
-        for entry in targets:
-            try:
-                result = self._organizer.installMod(
-                    entry.download.path, entry.display_name
-                )
-            except Exception as exc:
-                log_exception(_log, f"Install failed for {entry.display_name}", exc)
-                failed.append(f"{entry.display_name}: {exc}")
-                continue
-            if result is None:
-                _log.info(tag(f"Install cancelled for {entry.display_name}"))
-                failed.append(f"{entry.display_name}: installation was cancelled.")
-                continue
-
-            installed += 1
-            # Remembered because the rescan below reads meta.ini off disk and
-            # MO2 has not written this file id there yet. See _seed_installed_ids.
-            # Keyed on the mod MO2 says it created, not on the row's own name:
-            # its installer lets the user rename, and the rescan will find it
-            # under whatever name it now carries.
-            if entry.download.file_id:
+        # MO2 builds its installer windows without a parent and shows them with
+        # `exec()`, so the window manager is free to leave them behind this
+        # one. Started before the first install and stopped after the last.
+        focus = self._watch_for_installer_window()
+        try:
+            for entry in targets:
                 try:
-                    name = result.name() or entry.internal_name
-                except Exception:
-                    name = entry.internal_name
-                self._just_installed[name] = int(entry.download.file_id)
-            _log.info(
-                tag(f"Installed {entry.display_name} from {entry.download.file_name}")
-            )
-            if hide_after and not entry.download.hidden:
-                # Installing from disk usually means the archive was hidden by
-                # an earlier install already. Rewriting the meta to say so
-                # again would count it as newly hidden in the tally below.
-                error = downloads_index.hide(entry.download)
-                if error:
-                    _log.warning(tag(f"Could not hide download: {error}"))
-                    failed.append(f"{entry.display_name}: installed, but {error}")
-                else:
-                    hidden += 1
+                    result = self._organizer.installMod(
+                        entry.download.path, entry.display_name
+                    )
+                except Exception as exc:
+                    log_exception(_log, f"Install failed for {entry.display_name}", exc)
+                    failed.append((entry.display_name, str(exc)))
+                    continue
+                if result is None:
+                    _log.info(tag(f"Install cancelled for {entry.display_name}"))
+                    failed.append((entry.display_name, "Installation was cancelled."))
+                    continue
+
+                installed += 1
+                # Remembered because the rescan below reads meta.ini off disk and
+                # MO2 has not written this file id there yet. See _seed_installed_ids.
+                # Keyed on the mod MO2 says it created, not on the row's own name:
+                # its installer lets the user rename, and the rescan will find it
+                # under whatever name it now carries.
+                if entry.download.file_id:
+                    try:
+                        name = result.name() or entry.internal_name
+                    except Exception:
+                        name = entry.internal_name
+                    self._just_installed[name] = int(entry.download.file_id)
+                _log.info(
+                    tag(f"Installed {entry.display_name} from {entry.download.file_name}")
+                )
+                if hide_after and not entry.download.hidden:
+                    # Installing from disk usually means the archive was hidden by
+                    # an earlier install already. Rewriting the meta to say so
+                    # again would count it as newly hidden in the tally below.
+                    error = downloads_index.hide(entry.download)
+                    if error:
+                        _log.warning(tag(f"Could not hide download: {error}"))
+                        failed.append((entry.display_name, f"Installed, but {error}"))
+                    else:
+                        hidden += 1
+
+        finally:
+            focus.stop()
+            self._raised_window = None
 
         if failed:
-            QMessageBox.warning(
-                self,
+            self._confirm_list(
                 "Some installs did not finish",
-                f"Installed {installed}.\n\n" + "\n".join(failed),
+                f"Installed {installed} archive(s). {len(failed)} did not finish.",
+                ("Mod", "What happened"),
+                failed,
+                choices=(("close", "Close"),),
+                default="close",
             )
         else:
             note = f"Installed {installed} archive(s)."
@@ -1967,33 +2116,31 @@ class BulkUpdateManagerDialog(QDialog):
         if not local:
             return plan
 
-        lines = []
+        rows = []
         for e, info, found in local:
-            note = ""
+            state = ""
             if found.hidden:
-                note = " (hidden by MO2 after an earlier install)"
+                state = "Hidden by MO2 after an earlier install"
             elif not found.usable:
-                note = " (MO2 has installed this archive before)"
-            lines.append(f"  {e.display_name}  ->  {found.file_name}{note}")
+                state = "MO2 has installed this archive before"
+            rows.append((e.display_name, found.file_name, state, _note_line(e)))
 
-        box = QMessageBox(self)
-        box.setWindowTitle("Already in your downloads")
-        box.setIcon(QMessageBox.Icon.Question)
-        box.setText(
-            f"{len(local)} of these file(s) are already on disk:\n\n"
-            + "\n".join(lines)
-            + "\n\nInstall them from there instead of downloading again?"
+        choice = self._confirm_list(
+            "Already in your downloads",
+            f"{len(local)} of these file(s) are already on disk. Install them "
+            "from there instead of downloading again?",
+            ("Mod", "Archive", "State", "Note"),
+            rows,
+            choices=(
+                ("install", "Install from disk"),
+                ("download", "Download again"),
+                ("cancel", "Cancel"),
+            ),
+            default="install",
         )
-        install = box.addButton("Install from disk", QMessageBox.ButtonRole.AcceptRole)
-        again = box.addButton("Download again", QMessageBox.ButtonRole.DestructiveRole)
-        box.addButton(QMessageBox.StandardButton.Cancel)
-        box.setDefaultButton(install)
-        box.exec()
-
-        clicked = box.clickedButton()
-        if clicked is again:
+        if choice == "download":
             return plan
-        if clicked is not install:
+        if choice != "install":
             return []
 
         targets = []
@@ -2020,24 +2167,22 @@ class BulkUpdateManagerDialog(QDialog):
         and expiry that a free account's download needs -- the same route MO2's
         own "Query info" uses, and the only one it accepts without Premium.
         """
-        lines = "\n".join(
-            f"  {e.display_name}  ->  {info.get('name')} "
-            f"({info.get('version') or '?'}, {_size(info.get('size_kb'))})"
-            + _note_block(e)
-            for e, info in plan
-        )
-        answer = QMessageBox.question(
-            self,
+        choice = self._confirm_list(
             "Open download pages",
-            f"Your Nexus account is not Premium, so Nexus will not hand this "
-            f"window a download link.\n\nOpen {len(plan)} mod page(s) in your "
-            f"browser instead?\n\n{lines}\n\nOn each page, click 'Mod Manager "
-            "Download'. MO2 catches the link and this window follows the "
-            "download from there, exactly as it would for a Premium account.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
+            "Your Nexus account is not Premium, so Nexus will not hand this "
+            f"window a download link. Open {len(plan)} mod page(s) in your "
+            "browser instead?",
+            _FILE_HEADERS,
+            _file_rows(plan),
+            footer=(
+                "On each page, click 'Mod Manager Download'. MO2 catches the "
+                "link and this window follows the download from there, exactly "
+                "as it would for a Premium account."
+            ),
+            choices=(("open", "Open pages"), ("cancel", "Cancel")),
+            default="open",
         )
-        if answer != QMessageBox.StandardButton.Yes:
+        if choice != "open":
             return
 
         for entry, info in plan:
@@ -2184,23 +2329,20 @@ class BulkUpdateManagerDialog(QDialog):
         # The note earns its keep here more than anywhere else: a mod ignored
         # for a reason comes back into Updates the moment the author ships
         # anything newer, and this is the last screen before it downloads.
-        lines = "\n".join(
-            f"  {e.display_name}  ->  {info.get('name')} "
-            f"({info.get('version') or '?'}, {_size(info.get('size_kb'))})"
-            + _note_block(e)
-            for e, info in plan
-        )
-        extra = (
-            f"\n\nNo file could be chosen for: {', '.join(skipped)}" if skipped else ""
-        )
-        answer = QMessageBox.question(
-            self,
+        choice = self._confirm_list(
             "Start downloads",
-            f"Send {len(plan)} download(s) to MO2?\n\n{lines}{extra}",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
+            f"Send {len(plan)} download(s) to MO2?",
+            _FILE_HEADERS,
+            _file_rows(plan),
+            footer=(
+                f"No file could be chosen for: {', '.join(skipped)}"
+                if skipped
+                else ""
+            ),
+            choices=(("download", "Download"), ("cancel", "Cancel")),
+            default="download",
         )
-        if answer != QMessageBox.StandardButton.Yes:
+        if choice != "download":
             return
 
         manager = self._organizer.downloadManager()
@@ -2213,7 +2355,7 @@ class BulkUpdateManagerDialog(QDialog):
                 )
             except Exception as exc:
                 log_exception(_log, f"Download failed to start for {entry.display_name}", exc)
-                failed.append(f"{entry.display_name}: {exc}")
+                failed.append((entry.display_name, str(exc)))
                 continue
 
             # MO2 returns 0 when the download never got queued -- a collection
@@ -2225,7 +2367,7 @@ class BulkUpdateManagerDialog(QDialog):
                         f"{file_id} for {entry.display_name}"
                     )
                 )
-                failed.append(f"{entry.display_name}: MO2 did not queue the download.")
+                failed.append((entry.display_name, "MO2 did not queue the download."))
                 continue
 
             _log.info(
@@ -2242,17 +2384,79 @@ class BulkUpdateManagerDialog(QDialog):
         self._populate(self._entries)
 
         if failed:
-            QMessageBox.warning(
-                self,
+            self._confirm_list(
                 "Some downloads did not start",
-                f"Started {started} download(s).\n\nFailed:\n" + "\n".join(failed)
-                + "\n\nIf your Nexus account is not Premium, use 'Open on Nexus' and "
-                "click 'Mod Manager Download' instead.",
+                f"Started {started} download(s). {len(failed)} did not start.",
+                ("Mod", "What happened"),
+                failed,
+                footer=(
+                    "If your Nexus account is not Premium, use 'Open on Nexus' "
+                    "and click 'Mod Manager Download' instead."
+                ),
+                choices=(("close", "Close"),),
+                default="close",
             )
         else:
             self._status_label.setText(
                 f"Sent {started} download(s) to MO2. This window follows them from here."
             )
+
+    # -- confirmations -----------------------------------------------------
+
+    def _confirm_list(
+        self,
+        title: str,
+        summary: str,
+        headers,
+        rows,
+        footer: str = "",
+        choices=(),
+        default: str = "",
+    ) -> str:
+        """Ask, listing the rows in a table that scrolls. Returns the key pressed."""
+        box = ConfirmListDialog(
+            self, title, summary, headers, rows, footer, choices, default
+        )
+        box.exec()
+        return box.choice()
+
+    # -- installer focus ---------------------------------------------------
+
+    def _watch_for_installer_window(self) -> QTimer:
+        """Raise MO2's installer for as long as `installMod` is running.
+
+        MO2 constructs the FOMOD dialog with no parent
+        (`installer_fomod/src/installerfomod.cpp:218`) and shows it with
+        `exec()`, so nothing puts it in front of this window: the user is left
+        looking at a list that has stopped moving while the installer waits
+        off-screen for an answer. `exec()` runs a nested event loop, so a timer
+        started here keeps firing while `installMod` blocks, and by the time it
+        does the installer is the application's modal widget.
+
+        The caller stops it. Every window MO2 opens during an install is worth
+        raising, not only the FOMOD one, so it runs across the whole batch.
+        """
+        timer = QTimer(self)
+        timer.setInterval(_INSTALLER_FOCUS_MS)
+        timer.timeout.connect(self._raise_installer_window)
+        timer.start()
+        return timer
+
+    def _raise_installer_window(self) -> None:
+        """Bring whatever MO2 has opened over this window to the front, once."""
+        window = QApplication.activeModalWidget()
+        if window is None or window is self:
+            return
+        # Raising on every tick would fight the user, who is entitled to put a
+        # screenshot or a readme in front of the installer while deciding.
+        if window is self._raised_window:
+            return
+        self._raised_window = window
+        try:
+            window.raise_()
+            window.activateWindow()
+        except Exception as exc:
+            _log.debug(tag(f"Could not raise the installer window: {exc}"))
 
     # -- teardown ----------------------------------------------------------
 
@@ -2339,6 +2543,28 @@ def fit_to_screen(available_width: int, available_height: int) -> tuple:
     )
 
 
+def fit_confirmation(
+    available_width: int,
+    available_height: int,
+    wanted_width: int,
+    wanted_height: int,
+) -> tuple:
+    """A confirmation's size: what its list asks for, inside what the screen has.
+
+    The floor is applied first and the screen's share second, so on a screen
+    too small for the floor the screen still wins. That order matters: a
+    confirmation that overhangs loses its buttons, which sit at the bottom
+    edge.
+    """
+    wide, tall = _CONFIRM_SCREEN_SHARE
+    width = max(wanted_width, _CONFIRM_MIN_SIZE[0])
+    height = max(wanted_height, _CONFIRM_MIN_SIZE[1])
+    return (
+        min(width, max(int(available_width * wide), 1)),
+        min(height, max(int(available_height * tall), 1)),
+    )
+
+
 def parse_geometry(raw) -> Optional[tuple]:
     """``"x,y,w,h"`` back into four ints, or None if it is not that."""
     parts = str(raw or "").split(",")
@@ -2376,19 +2602,30 @@ def _note_label(entry) -> str:
     return f"{_NOTE_MARK}{_note_age(entry)} {text}"
 
 
-def _note_block(entry) -> str:
-    """The user's note, indented under its mod, for a confirmation dialog.
+def _file_rows(plan: list) -> list:
+    """`_FILE_HEADERS` rows for a list of (entry, file record) pairs."""
+    return [
+        (
+            entry.display_name,
+            info.get("name") or "",
+            info.get("version") or "?",
+            _size(info.get("size_kb")),
+            _note_line(entry),
+        )
+        for entry, info in plan
+    ]
 
-    Not shortened here: a dialog listing a handful of mods has room, and this
-    is the last chance to read the reason before acting against it.
+
+def _note_line(entry) -> str:
+    """The user's note as one marked line, whole, for a confirmation list.
+
+    Not shortened the way the Notes column is: a confirmation sizes its columns
+    to their content and scrolls sideways, and this is the last chance to read
+    the reason before acting against it.
     """
     if not entry.note:
         return ""
-    lines = [line.strip() for line in entry.note.splitlines() if line.strip()]
-    if not lines:
-        return ""
-    head = f"\n      {_NOTE_MARK}{_note_age(entry)} {lines[0]}"
-    return head + "".join(f"\n        {line}" for line in lines[1:])
+    return f"{_NOTE_MARK}{_note_age(entry)} {' '.join(entry.note.split())}"
 
 
 def _notes_cell(entry) -> str:

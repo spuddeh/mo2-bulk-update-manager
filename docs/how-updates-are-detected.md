@@ -147,9 +147,10 @@ necessary.
 
 Only an interrupted download is excluded, because there is no whole archive behind it.
 
-Installing this way runs MO2's normal installer, so any FOMOD still asks its usual questions, and
-the window remembers the file id it asked MO2 to install so the rescan afterwards does not lose the
-race against MO2's own `meta.ini` write.
+Installing this way runs MO2's normal installer, so any FOMOD still asks its usual questions. Each
+installer window is brought to the front as it opens, so a batch does not stall behind a dialog you
+cannot see. The window also remembers the file id it asked MO2 to install, so the rescan afterwards
+does not lose the race against MO2's own `meta.ini` write.
 
 ## What the columns show
 
