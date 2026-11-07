@@ -51,8 +51,15 @@ one once validated behaviour the live plugin did not have, and cost a round trip
 
 ## `tools/test_structure.py`
 
-Asserts that every `self._method()` call resolves to a method that exists on its class. Pure AST,
-imports nothing, runs anywhere.
+Asserts that every `self._method()` call resolves to a method that exists on its class, and that
+every MO2 call added after 2.5.2 sits in a function that checks it with `hasattr()` first. Pure
+AST, imports nothing, runs anywhere.
+
+The 2.5.2 list in `POST_252_METHODS` comes from diffing the Python bindings
+(`plugin_python/src/mobase/wrappers/basic_classes.cpp`) at the 2.5.2 commit against the 2.5.3
+betas. It only catches calls that do not exist on 2.5.2. A call that exists on both but behaves
+differently, such as `startDownloadNexusFile` returning a row count on 2.5.2 rather than a
+download id, needs a scan and a download in a 2.5.2 instance.
 
 ```bash
 python tools/test_structure.py
