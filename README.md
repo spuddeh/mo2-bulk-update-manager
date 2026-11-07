@@ -30,9 +30,9 @@ Copy the `mo2_bulk_update_manager/` folder into your MO2 `plugins/` directory, s
 
 Restart MO2. It appears under **Tools > MO2 Bulk Update Manager**.
 
-It was built against MO2 **2.5.3beta12**, which is not a public release. You get it from the
-**dev-builds** channel on the [Mod Organizer 2 Discord](https://discord.gg/ewUVAqyrQX). It may well
-run on **2.5.2**, the current release, but nobody has tried it.
+It runs on MO2 **2.5.2**, the current public release, and on the **2.5.3** betas from the
+**dev-builds** channel on the [Mod Organizer 2 Discord](https://discord.gg/ewUVAqyrQX). On 2.5.2 it
+can only download files for the game the instance manages; see [Installing](docs/install.md).
 
 You also need a Nexus account already signed in to MO2, and Windows, because the credentials come
 from the Windows Credential Manager. There is no API key to paste in and nothing you have to set up.

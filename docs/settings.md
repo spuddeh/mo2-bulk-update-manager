@@ -64,8 +64,11 @@ paste into `api_key`, from
 - **Download progress comes from MO2, not from polling.** `IDownloadManager` exposes
   `onDownloadComplete`, `onDownloadFailed` and `onDownloadPaused`, and the id returned by
   `startDownloadNexusFileForGame` is the one those report. MO2 returns `0` when it declines to queue
-  at all, such as a collection link or a file for another game (`downloadmanager.cpp:745`). Those
-  handlers cannot be unregistered, so they check that the window is still open before touching
+  at all, such as a collection link or a file for another game (`downloadmanager.cpp:745`). 2.5.2
+  has no such id: its `startDownloadNexusFile` returns the Downloads tab's row count when called,
+  and the handlers report a row. There the plugin matches each finished row to the file it queued
+  through the archive's `.meta` file, or its name if it did not finish. Those handlers cannot be
+  unregistered, so they check that the window is still open before touching
   anything.
 - **"Hide downloads after installation" is honoured.** MO2 applies that setting itself only on its
   own Downloads-tab install path (`organizercore.cpp:911`); the archive install that plugins get

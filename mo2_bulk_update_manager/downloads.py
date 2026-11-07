@@ -63,6 +63,14 @@ class DownloadInfo:
         return f"<DownloadInfo {self.file_name!r} {self.state}>"
 
 
+def meta_file_id(meta_path: str) -> int:
+    """The Nexus ``fileID`` a download's meta file records, 0 when it has none."""
+    try:
+        return int(_read_general(meta_path).get("fileid") or 0)
+    except ValueError:
+        return 0
+
+
 def _read_general(path: str) -> dict:
     """Read the ``[General]`` section of a download's meta file."""
     values: dict[str, str] = {}

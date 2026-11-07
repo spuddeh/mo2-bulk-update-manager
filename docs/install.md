@@ -2,9 +2,13 @@
 
 ## Requirements
 
-- Mod Organizer 2 **2.5.3beta12** or later. That build is not a public release: it comes from the
-  **dev-builds** channel on the [Mod Organizer 2 Discord](https://discord.gg/ewUVAqyrQX). **2.5.2**, the current public release, is
-  untested. Reports either way are welcome.
+- Mod Organizer 2 **2.5.2** or later. The **2.5.3** betas from the **dev-builds** channel on the
+  [Mod Organizer 2 Discord](https://discord.gg/ewUVAqyrQX) work too.
+
+  2.5.2 has one limit. Its download call always uses the Nexus page of the game the instance
+  manages, so a mod from another game's page (a Skyrim LE mod in a Skyrim SE instance, say) cannot
+  be downloaded from the window. The window lists those as not started; use **Open on Nexus** and
+  click **Mod Manager Download** there. 2.5.3 downloads them directly.
 - A Nexus account signed in to MO2, under **Settings > Nexus**.
 - Windows, because credentials come from the Windows Credential Manager.
 

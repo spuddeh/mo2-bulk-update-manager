@@ -87,12 +87,50 @@ from .scanner import (
     clear_ignored_version,
     collect_mods,
     is_ignored,
+    nexus_domain,
     versions_match,
 )
 from .theme import Theme
 from .updater import UpdateScan, note_download
 
 _ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.svg")
+
+
+def mo2_version(organizer: mobase.IOrganizer) -> str:
+    """MO2's own version as text, on 2.5.2 and on the 2.5.3 betas.
+
+    2.5.2 only has `appVersion()`. 2.5.3 adds `version()` and logs a
+    deprecation warning on every `appVersion()` call, so `version()` is
+    preferred where it exists.
+    """
+    if hasattr(organizer, "version"):
+        return str(organizer.version())
+    return str(organizer.appVersion())
+
+
+class _OtherGameDownload(Exception):
+    """The file belongs to a game other than the managed one, on MO2 2.5.2."""
+
+
+def _start_nexus_download(
+    organizer, manager, domain: str, mod_id: int, file_id: int
+) -> Optional[int]:
+    """Queue a Nexus file in MO2's downloads.
+
+    Returns MO2's download id on 2.5.3, where 0 means MO2 declined it. Returns
+    None on 2.5.2: its `startDownloadNexusFile` always queues, and returns the
+    Downloads tab's row count at the time of the call, which every download in
+    one batch shares and which is not the row the download ends up on
+    (downloadmanager.cpp:1910 in 2.5.2). It also always uses the managed
+    game's domain, so a file from any other game's page raises
+    `_OtherGameDownload` there rather than fetching the wrong mod.
+    """
+    if hasattr(manager, "startDownloadNexusFileForGame"):
+        return manager.startDownloadNexusFileForGame(domain, mod_id, file_id)
+    if domain.lower() != nexus_domain(organizer, "").lower():
+        raise _OtherGameDownload(domain)
+    manager.startDownloadNexusFile(mod_id, file_id)
+    return None
 
 # The window is a five-column list beside a detail pane, so it needs width more
 # than height and it needs to stay usable on a laptop. Below this it starts
@@ -414,6 +452,10 @@ class BulkUpdateManagerDialog(QDialog):
         # started, so their rows can move on their own instead of waiting for
         # the user to rescan.
         self._in_flight: dict = {}
+        # Nexus file id -> (entry, file record), on MO2 2.5.2 only. That
+        # version hands back no usable download id, so a finished download is
+        # matched to its row by the file it fetched instead. See _claim.
+        self._in_flight_by_file: dict = {}
         self._refresh_pending = False
         self._closed = False
         # The installer window most recently brought to the front, so it is
@@ -707,8 +749,9 @@ class BulkUpdateManagerDialog(QDialog):
         # the downloads folder anyway, which is what those rows would have
         # become.
         self._in_flight.clear()
+        self._in_flight_by_file.clear()
 
-        self._client = NexusClient(auth, str(self._organizer.version()), self)
+        self._client = NexusClient(auth, mo2_version(self._organizer), self)
         self._client.rateLimitChanged.connect(self._on_rate_limit)
 
         self._entries, skipped, self._disabled_count = collect_mods(
@@ -948,20 +991,59 @@ class BulkUpdateManagerDialog(QDialog):
             # reason to fail opening the window.
             pass
 
-    def _claim(self, download_id) -> Optional[tuple]:
+    def _claim(self, download_id, release: bool = False) -> Optional[tuple]:
+        """The (entry, file record) this window queued as `download_id`.
+
+        `release` also stops following it. On 2.5.2 the id MO2 signals with is
+        a row in its Downloads tab, unrelated to anything returned when the
+        download was queued, so the row's archive is read to find the file:
+        its meta file once complete, otherwise its name.
+        """
         if self._closed:
             return None
         try:
-            return self._in_flight.get(int(download_id))
+            download_id = int(download_id)
         except (TypeError, ValueError):
             return None
 
+        if download_id in self._in_flight:
+            if release:
+                return self._in_flight.pop(download_id)
+            return self._in_flight[download_id]
+        if not self._in_flight_by_file:
+            return None
+
+        try:
+            path = self._organizer.downloadManager().downloadPath(download_id)
+        except Exception:
+            return None
+        if not path:
+            return None
+
+        file_id = downloads_index.meta_file_id(path + ".meta")
+        if file_id not in self._in_flight_by_file:
+            name = os.path.basename(path).lower()
+            if name.endswith(".unfinished"):
+                name = name[: -len(".unfinished")]
+            file_id = next(
+                (
+                    key
+                    for key, (_, info) in self._in_flight_by_file.items()
+                    if str(info.get("file_name") or "").lower() == name
+                ),
+                0,
+            )
+        if file_id not in self._in_flight_by_file:
+            return None
+        if release:
+            return self._in_flight_by_file.pop(file_id)
+        return self._in_flight_by_file[file_id]
+
     def _on_download_complete(self, download_id) -> None:
-        claimed = self._claim(download_id)
+        claimed = self._claim(download_id, release=True)
         if claimed is None:
             return
         entry, info = claimed
-        self._in_flight.pop(int(download_id), None)
 
         path = ""
         try:
@@ -988,11 +1070,10 @@ class BulkUpdateManagerDialog(QDialog):
         self._schedule_refresh()
 
     def _on_download_failed(self, download_id) -> None:
-        claimed = self._claim(download_id)
+        claimed = self._claim(download_id, release=True)
         if claimed is None:
             return
         entry, _ = claimed
-        self._in_flight.pop(int(download_id), None)
         entry.status = ModEntry.UPDATE
         entry.message = "Download failed. Check MO2's Downloads tab."
         _log.warning(tag(f"Download {download_id} failed: {entry.display_name}"))
@@ -2350,12 +2431,35 @@ class BulkUpdateManagerDialog(QDialog):
         for entry, info in plan:
             file_id = info.get("file_id")
             try:
-                download_id = manager.startDownloadNexusFileForGame(
-                    entry.domain, int(entry.mod_id), int(file_id)
+                download_id = _start_nexus_download(
+                    self._organizer, manager, entry.domain, int(entry.mod_id), int(file_id)
                 )
+            except _OtherGameDownload:
+                failed.append(
+                    (
+                        entry.display_name,
+                        f"This file is on the {entry.domain} Nexus page. MO2 2.5.2 only "
+                        "downloads files for the managed game, so use 'Open on Nexus' "
+                        "and click 'Mod Manager Download'.",
+                    )
+                )
+                continue
             except Exception as exc:
                 log_exception(_log, f"Download failed to start for {entry.display_name}", exc)
                 failed.append((entry.display_name, str(exc)))
+                continue
+
+            if download_id is None:
+                _log.info(
+                    tag(
+                        f"Queued download: {entry.display_name} -> {info.get('name')} "
+                        f"({entry.domain}/{entry.mod_id} file {file_id})"
+                    )
+                )
+                started += 1
+                entry.status = ModEntry.DOWNLOADING
+                entry.message = "Queued in MO2's Downloads tab."
+                self._in_flight_by_file[int(file_id)] = (entry, info)
                 continue
 
             # MO2 returns 0 when the download never got queued -- a collection
@@ -2466,6 +2570,7 @@ class BulkUpdateManagerDialog(QDialog):
         self._closed = True
         self._save_geometry()
         self._in_flight.clear()
+        self._in_flight_by_file.clear()
         if self._client is not None:
             self._client.cancel()
         self._cache.save()

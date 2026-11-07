@@ -8,7 +8,7 @@ except ImportError:
 import mobase
 
 from ._version import VERSION
-from .dialog import DEFAULT_FILE_CATEGORIES, BulkUpdateManagerDialog
+from .dialog import DEFAULT_FILE_CATEGORIES, BulkUpdateManagerDialog, mo2_version
 from .log import get_logger, tag
 
 _log = get_logger()
@@ -122,7 +122,7 @@ class BulkUpdateManagerPlugin(mobase.IPluginTool):
         game = self._organizer.managedGame()
         _log.info(
             tag(
-                f"{PLUGIN_NAME} {VERSION} opening (MO2 {self._organizer.version()}, "
+                f"{PLUGIN_NAME} {VERSION} opening (MO2 {mo2_version(self._organizer)},"
                 f"game {game.gameShortName() if game else 'unknown'})"
             )
         )
